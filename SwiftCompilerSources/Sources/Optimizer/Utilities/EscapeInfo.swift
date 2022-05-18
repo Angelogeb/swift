@@ -127,7 +127,7 @@ struct EscapeInfo {
 
   /// Returns true if the definition of `value` is escaping.
   ///
-  /// In contrast to `isEscaping`, this function starts with a walk-up instead of a walk-down from `value`.
+  /// In contrast to `isEscaping`, this function starts with a walk-down instead of a walk-up from `value`.
   mutating func isEscapingWhenWalkingDown(object: Value,
                       path: Path = Path(),
                       visitUse: UseCallback = { _, _, _ in .continueWalking },
@@ -833,7 +833,7 @@ struct EscapeInfo {
         case is AllocRefInst, is AllocRefDynamicInst:
           return walkDownAndCache(val, path: p, followStores: fSt, knownType: val.type,
                                   visitUse: visitUse, visitDef: visitDef)
-        case is AllocRefInst, is AllocRefDynamicInst, is AllocStackInst, is AllocBoxInst:
+        case is AllocStackInst, is AllocBoxInst:
           return walkDownAndCache(val, path: p, followStores: fSt, knownType: nil,
                                   visitUse: visitUse, visitDef: visitDef)
         case let arg as FunctionArgument:
