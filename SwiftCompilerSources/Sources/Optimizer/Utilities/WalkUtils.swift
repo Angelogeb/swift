@@ -53,7 +53,6 @@ func walkDownAddress(_ value: Value, path: SmallProjectionPath,
     }
     
     let user = use.instruction
-    var matched = true
     
     switch user {
     case let sea as StructElementAddrInst:
@@ -72,14 +71,6 @@ func walkDownAddress(_ value: Value, path: SmallProjectionPath,
         return walkDownAddress(mdi, path: path, visitUse: visitUse, leafUses: &leafUses)
       }
     default:
-      matched = false
-      break
-    }
-    
-    // We also reach this statement if we did match an instruction but the
-    // path is empty in which case we don't add to the result.
-    if (!matched) {
-      // We didn't match any instruction so this is a leafUse
       leafUses.push((use, path))
     }
   }
@@ -92,8 +83,8 @@ func walkUpAddress(_ value: Value, path: SmallProjectionPath,
                    visitDef: DefCallback, rootDefs: inout Stack<(Value, SmallProjectionPath)>) -> Bool {
   var val = value
   var p = path
-  var done = false
-  while !done {
+  
+  while true {
     switch visitDef(val, p) {
     case .ignore: return false
     case .abortWalk:
@@ -116,14 +107,10 @@ func walkUpAddress(_ value: Value, path: SmallProjectionPath,
       // The first operand is the result
       val = mdi.operands[0].value
     default:
-      done = true
-      break
+      rootDefs.push((val, path))
+      return false
     }
   }
-  
-  rootDefs.push((val, path))
-  
-  return false
 }
 
 /// Given a `value` reaching a value of interest `v` and a `path` denoting the access path from `value` to `v`
@@ -149,7 +136,6 @@ func walkDownValue(_ value: Value, path: SmallProjectionPath,
     }
     
     let user = use.instruction
-    var matched = true
     
     switch user {
     case let str as StructInst:
@@ -212,13 +198,6 @@ func walkDownValue(_ value: Value, path: SmallProjectionPath,
     case let bcm as BeginCOWMutationInst:
       return walkDownValue(bcm.bufferResult, path: path, visitUse: visitUse, leafUses: &leafUses)
     default:
-      matched = false
-    }
-    
-    // We also reach this statement if we did match an instruction but the
-    // path is empty in which case we don't add the use to the result.
-    if (!matched) {
-      // We didn't enter any instruction so this is a leafUse
       leafUses.push((use, path))
     }
   }
@@ -230,8 +209,7 @@ func walkUpValue(_ value: Value, path: SmallProjectionPath,
                  visitDef: DefCallback, rootDefs: inout Stack<(Value, SmallProjectionPath)>) -> Bool {
   var val = value
   var p = path
-  var done = false
-  while !done {
+  while true {
     switch visitDef(val, p) {
     case .ignore: return false
     case .abortWalk:
@@ -253,7 +231,8 @@ func walkUpValue(_ value: Value, path: SmallProjectionPath,
         }
         return false
       } else {
-        return false
+        // NOTE: Conservative abort. Should be unreachable
+        return true
       }
     case let se as StructExtractInst:
       val = se.operand
@@ -276,7 +255,8 @@ func walkUpValue(_ value: Value, path: SmallProjectionPath,
         }
         return false
       } else {
-        return false
+        // NOTE: Conservative abort. Should be unreachable
+        return true
       }
     case let te as TupleExtractInst:
       val = te.operand
@@ -299,10 +279,8 @@ func walkUpValue(_ value: Value, path: SmallProjectionPath,
     case let mvr as MultipleValueInstructionResult where mvr.instruction is BeginCOWMutationInst:
       val = ((mvr.instruction as! BeginCOWMutationInst).operand)
     default:
-      done = true
+      rootDefs.push((val, p))
+      return false
     }
   }
-  
-  rootDefs.push((val, p))
-  return false
 }
