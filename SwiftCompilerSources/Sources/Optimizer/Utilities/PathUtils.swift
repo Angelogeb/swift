@@ -16,6 +16,11 @@ enum ResultPath {
   case unmatchedInstruction
   case unmatchedPath
   case some(Value, SmallProjectionPath)
+  
+  var isUnmatchedInstruction : Bool {
+    if case .unmatchedInstruction = self { return true }
+    return false
+  }
 }
 
 // Given the value operand `value` of an instruction, return
@@ -34,6 +39,10 @@ func resultPath(value operand: Operand, path: SmallProjectionPath) -> ResultPath
   case let se as StructExtractInst:
     if let newPath = path.popIfMatches(.structField, index: se.fieldIndex) {
       return .some(se, newPath)
+    }
+  case let te as TupleExtractInst:
+    if let newPath = path.popIfMatches(.tupleField, index: te.fieldIndex) {
+      return .some(te, newPath)
     }
   case let ued as UncheckedEnumDataInst:
     if let newPath = path.popIfMatches(.enumCase, index: ued.caseIndex) {
@@ -85,8 +94,10 @@ func resultPath(addr operand: Operand, path: SmallProjectionPath) -> ResultPath 
   case is InitExistentialAddrInst, is OpenExistentialAddrInst, is BeginAccessInst,
        is PointerToAddressInst, is AddressToPointerInst, is IndexAddrInst:
     return .some(instruction as! SingleValueInstruction, path)
-  case let mdi as MarkDependenceInst where operand.index == 0:
-    return .some(mdi, path)
+  case let mdi as MarkDependenceInst:
+    if operand.index == 0 {
+      return .some(mdi, path)
+    }
   default:
     return .unmatchedInstruction
   }
@@ -154,6 +165,8 @@ func operandDefinition(value: Value, path: SmallProjectionPath) -> ResultPath {
   // MARK: Non-Address to Non-Address Projections
   case let se as StructExtractInst:
     return .some(se.operand, path.push(.structField, index: se.fieldIndex))
+  case let te as TupleExtractInst:
+    return .some(te.operand, path.push(.tupleField, index: te.fieldIndex))
   case let ued as UncheckedEnumDataInst:
     return .some(ued.operand, path.push(.enumCase, index: ued.caseIndex))
   // MARK: (trivially Non-Address to Non-Address) Multiresult Projections
@@ -199,7 +212,7 @@ func operandDefinition(addr: Value, path: SmallProjectionPath) -> ResultPath {
        is PointerToAddressInst, is AddressToPointerInst, is IndexAddrInst:
     return .some((addr as! Instruction).operands[0].value, path)
   case let mdi as MarkDependenceInst:
-    return .some((mdi as Instruction).operands[0].value, path)
+    return .some(mdi.operands[0].value, path)
   default:
     return .unmatchedInstruction
   }

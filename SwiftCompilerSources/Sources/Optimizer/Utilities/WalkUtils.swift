@@ -63,67 +63,38 @@ extension ValueDefUseWalker {
     for operand in def.uses {
       if operand.isTypeDependent { continue }
       
-      var maybeLinearNext: (value: Value, path: SmallProjectionPath)? = nil
-
       // .none              : current not visited
       // .some(let aborted) : current and all recursive paths visited and `aborted = visitResult is .abortWalk`
       var visitAborted: Bool?
       
-      let user = operand.instruction
-      switch user {
-      case let str as StructInst:
-        maybeLinearNext = (str, path.push(.structField, index: operand.index))
-      case let t as TupleInst:
-        maybeLinearNext = (t, path.push(.tupleField, index: operand.index))
-      case let br as BranchInst:
-        let val = br.getArgument(for: operand)
-        if let path = shouldRecomputeDown(value: val, path: path) {
-          maybeLinearNext = (val, path)
+      var maybeLinearNext = resultPath(value: operand, path: path)
+      switch maybeLinearNext {
+      case .unmatchedPath:
+        let inst = operand.instruction
+        if path.topMatchesAnyValueField && (inst is DestructureStructInst || inst is DestructureTupleInst) {
+          visitAborted = visitAndWalkDown(operand, path: path,
+                                          values: inst.results, newPath: path)
+        } else {
+          TODO("Inconsistent state? Path (\(path) does not match instruction \(operand.instruction)")
         }
-        maybeLinearNext = (br.getArgument(for: operand), path)
-      case let se as StructExtractInst:
-        if let newPath = path.popIfMatches(.structField, index: se.fieldIndex) {
-          maybeLinearNext = (se, newPath)
+      case .unmatchedInstruction:
+        switch operand.instruction {
+        case let br as BranchInst:
+          let val = br.getArgument(for: operand)
+          if let path = shouldRecomputeDown(value: val, path: path) {
+            maybeLinearNext = .some(val, path)
+          }
+        case let cbr as CondBranchInst:
+          // TODO: ?
+          assert(operand.index != 0, "should not visit trivial non-address values")
+          let val = cbr.getArgument(for: operand)
+          if let path = shouldRecomputeDown(value: val, path: path) {
+            maybeLinearNext = .some(val, path)
+          }
+        default:
+          break
         }
-      case let ds as DestructureStructInst:
-        if let (index, newPath) = path.pop(kind: .structField) {
-          maybeLinearNext = (ds.results[index], newPath)
-        } else if path.topMatchesAnyValueField {
-          // TODO: branching traversal?
-          visitAborted = visitAndWalkDown(operand, path: path, values: ds.results, newPath: path)
-        }
-      case let dt as DestructureTupleInst:
-        if let (index, newPath) = path.pop(kind: .tupleField) {
-          maybeLinearNext = (dt.results[index], newPath)
-        } else if path.topMatchesAnyValueField {
-          // TODO: branching traversal?
-          visitAborted = visitAndWalkDown(operand, path: path, values: dt.results, newPath: path)
-        }
-      case let te as TupleExtractInst:
-        if let newPath = path.popIfMatches(.tupleField, index: te.fieldIndex) {
-          maybeLinearNext = (te, newPath)
-        }
-      case let e as EnumInst:
-        maybeLinearNext = (e, path.push(.enumCase, index: e.caseIndex))
-      case is UncheckedEnumDataInst, is InitEnumDataAddrInst, is UncheckedTakeEnumDataAddrInst:
-        let svi = user as! SingleValueInstruction
-        let caseIdx = (user as! EnumInstruction).caseIndex
-        if let newPath = path.popIfMatches(.enumCase, index: caseIdx) {
-          maybeLinearNext = (svi, newPath)
-        }
-      // "Forwarding" instructions
-      case is UpcastInst, is UncheckedRefCastInst,
-           is InitExistentialRefInst, is OpenExistentialRefInst,
-           is InitExistentialAddrInst, is OpenExistentialAddrInst,
-           is BeginAccessInst, is BeginBorrowInst,
-           is EndCOWMutationInst,
-           is RefToBridgeObjectInst, is BridgeObjectToRefInst,
-           is IndexAddrInst, is CopyValueInst, is MarkDependenceInst,
-           is PointerToAddressInst, is AddressToPointerInst:
-        maybeLinearNext = (user as! SingleValueInstruction, path)
-      case let bcm as BeginCOWMutationInst:
-        maybeLinearNext = (bcm.bufferResult, path)
-      default:
+      case .some(_, _):
         break
       }
       
@@ -137,16 +108,17 @@ extension ValueDefUseWalker {
         }
       } else {
         // We still have to visit the current use
-        let nextStep = visitUse(ofValue: operand, path: path, isLeaf: maybeLinearNext == nil)
+        let nextStep = visitUse(ofValue: operand, path: path,
+                                isLeaf: maybeLinearNext.isUnmatchedInstruction)
         if nextStep == .abortWalk {
           return true
-        } else if let (nextValue, nextPath) = maybeLinearNext,  // there is a next
-            nextStep == .continueWalk &&                        // and client wants to continue
-            walkDown(value: nextValue, path: nextPath) {        // visit, and if it is an abort return
+        } else if case let .some(nextValue, nextPath) = maybeLinearNext,
+                  nextStep == .continueWalk &&
+                  walkDown(value: nextValue, path: nextPath) {
           return true
         } else {
-          // `nextStep == .ignore` Nothing to do.
-          // Client might have returned `.continueWalk` but there is no next use
+          //     Client might have returned `.continueWalk` but there is no follow
+          assert(nextStep == .ignore, "Cannot continue walk")
         }
       }
     }
@@ -156,7 +128,8 @@ extension ValueDefUseWalker {
 
 protocol ValueUseDefWalker : MemoizedUp {
   mutating
-  func visitDef(ofValue value: Value, path: SmallProjectionPath, isRoot: Bool) -> WalkResult
+  func visitDef(ofValue value: Value, path: SmallProjectionPath,
+                isRoot: Bool) -> WalkResult
 }
 
 extension ValueUseDefWalker {
@@ -184,105 +157,74 @@ extension ValueUseDefWalker {
     var current: (value: Value, path: SmallProjectionPath) = (def, path)
     
     while true {
-      
+      let (value, path) = current
       // 1. First compute if we will continue the walk and what will be the
-      //    `next` `value` and `path` so we can pass `isRoot` to the `visitDef` of the _current_ definition.
-      //    In case of the walk branching, that will be a recursive call so
-      //    we return right away.
-      var maybeNext: (value: Value, path: SmallProjectionPath)? = nil
+      //    `next` `value` and `path` so we can pass `isRoot` to the `visitDef`
+      //    of the _current_ definition.
+      var maybeNext = operandDefinition(value: value, path: path)
       
-      let (val, p) = current
-      switch val {
-      case let str as StructInst:
-        if let (structField, poppedPath) = p.pop(kind: .structField) {
-          maybeNext = (str.operands[structField].value, poppedPath)
-        } else if p.topMatchesAnyValueField {
-          return visitAndWalkUp(value: str, path: p, operands: str.operands, newPath: p)
-        }
-        // If reached, `next == nil` at the end of the switch which
-        // meeans we reached a root and the walk will stop.
-      case let t as TupleInst:
-        if let (tupleField, poppedPath) = p.pop(kind: .tupleField) {
-          maybeNext = (t.operands[tupleField].value, poppedPath)
-        } else if p.topMatchesAnyValueField {
-          return visitAndWalkUp(value: t, path: p, operands: t.operands, newPath: p)
-        }
-        // If reached, `next == nil` at the end of the switch which
-        // meeans we reached a root and the walk will stop.
-      case let arg as BlockArgument:
-        if arg.isPhiArgument {
-          let nextStep = visitDef(ofValue: arg, path: p, isRoot: false)
-          switch nextStep {
-          case .abortWalk, .ignore:
-            return nextStep == .abortWalk
-          case .continueWalk:
-            for incoming in arg.incomingPhiValues {
-              if let path = shouldRecomputeUp(value: incoming, path: p),
-                 walkUp(value: incoming, path: path) {
-                return true
-              }
-            }
-            return false
-          }
+      switch maybeNext {
+      case .unmatchedPath:
+        let (value, path) = current
+        if path.topMatchesAnyValueField && (value is StructInst || value is TupleInst) {
+          // In case of the walk branching, the recursive call will handle
+          // the rest of the walk, so we return right away
+          return visitAndWalkUp(value: value, path: path,
+                                operands: (value as! Instruction).operands, newPath: path)
         } else {
-          TODO("enum/try_apply block argument")
+          TODO("Inconsistent state? Path (\(path) does not match instruction \(value)")
         }
-      case let se as StructExtractInst:
-        maybeNext = (se.operand, p.push(.structField, index: se.fieldIndex))
-      case let mvr as MultipleValueInstructionResult where mvr.instruction is DestructureStructInst:
-        maybeNext = (
-          (mvr.instruction as! DestructureStructInst).operand,
-          p.push(.structField, index: mvr.index)
-        )
-      case let mvr as MultipleValueInstructionResult where mvr.instruction is DestructureTupleInst:
-        maybeNext = (
-          (mvr.instruction as! DestructureTupleInst).operand,
-          p.push(.tupleField, index: mvr.index)
-        )
-      case let te as TupleExtractInst:
-        maybeNext = (te.operand, p.push(.tupleField, index: te.fieldIndex))
-      case let e as EnumInst:
-        if let popped = p.popIfMatches(.enumCase, index: e.caseIndex),
-           let op = e.operand {
-          maybeNext = (op, popped)
+      case .unmatchedInstruction:
+        if let arg = value as? BlockArgument {
+          if arg.isPhiArgument {
+            let nextStep = visitDef(ofValue: arg, path: path, isRoot: false)
+            switch nextStep {
+            case .abortWalk, .ignore: return nextStep == .abortWalk
+            case .continueWalk:
+              for incoming in arg.incomingPhiValues {
+                if let path = shouldRecomputeUp(value: incoming, path: path),
+                   walkUp(value: incoming, path: path) {
+                  return true
+                }
+              }
+              return false
+            }
+          } else {
+            let block = arg.block
+            switch block.singlePredecessor!.terminator {
+            case let se as SwitchEnumInst:
+              if let caseIdx = se.getUniqueCase(forSuccessor: block) {
+                maybeNext = .some(se.enumOp, path.push(.enumCase, index: caseIdx))
+              } else {
+                // TODO: ("EscapeInfo returns .abortWalk (isEscaping)")
+                // here instead we leave maybeNext as .unmatchedInstruction
+                // so the caller knows that this is a root according
+                // to the traversal and therefore can abort
+              }
+            case is TryApplyInst:
+              TODO("Case TryApplyInst should be handled in EscapeInfo")
+            default:
+              break
+            }
+          }
         }
-        // If reached, `next == nil` at the end of the switch which
-        // meeans we reached a root and the walk will stop.
-      case is UncheckedEnumDataInst, is InitEnumDataAddrInst, is UncheckedTakeEnumDataAddrInst:
-        maybeNext = (
-          (val as! UnaryInstruction).operand,
-          p.push(.enumCase, index: (val as! EnumInstruction).caseIndex)
-        )
-      // "Forwarding" instructions
-      case is UpcastInst, is UncheckedRefCastInst,
-           is InitExistentialRefInst, is OpenExistentialRefInst,
-           is InitExistentialAddrInst, is OpenExistentialAddrInst,
-           is BeginAccessInst, is BeginBorrowInst,
-           is EndCOWMutationInst,
-           is RefToBridgeObjectInst, is BridgeObjectToRefInst,
-           is IndexAddrInst, is CopyValueInst, is MarkDependenceInst,
-           is PointerToAddressInst, is AddressToPointerInst:
-        maybeNext = ((val as! Instruction).operands[0].value, p)
-      case let mvr as MultipleValueInstructionResult where mvr.instruction is BeginCOWMutationInst:
-        maybeNext = ((mvr.instruction as! BeginCOWMutationInst).operand, p)
-      default:
+      case .some(_, _):
         break
       }
       
-      let isRoot = maybeNext == nil
       // 2. Visit the _current_ definition
-      let nextStep = visitDef(ofValue: val, path: p, isRoot: isRoot)
+      let nextStep = visitDef(ofValue: value, path: path,
+                              isRoot: maybeNext.isUnmatchedInstruction)
       
-      if let next = maybeNext, nextStep == .continueWalk {
+      if case .some(let val, let p) = maybeNext, nextStep == .continueWalk {
         // 3a. Set current to next and continue the walk
-        current = (next.value, next.path)
+        current = (val, p)
       } else if nextStep == .abortWalk {
-        // Client requests to not visit the other uses
         return true
       } else {
-        // 3b. nextStep == .ignore
-        //     Nothing to do. Client might have returned `.continueWalk` but there is no follow
-        return false
+        // 3b. nextStep == .ignore. Nothing to do.
+        //     Client might have returned `.continueWalk` but there is no follow
+        assert(nextStep == .ignore, "Cannot continue walk")
       }
     }
   }
@@ -290,7 +232,8 @@ extension ValueUseDefWalker {
 
 protocol AddressDefUseWalker : MemoizedDown {
   mutating
-  func visitUse(ofAddress operand: Operand, path: SmallProjectionPath, isLeaf: Bool) -> WalkResult
+  func visitUse(ofAddress operand: Operand, path: SmallProjectionPath,
+                isLeaf: Bool) -> WalkResult
 }
 
 extension AddressDefUseWalker {
@@ -301,43 +244,37 @@ extension AddressDefUseWalker {
     for use in def.uses {
       if use.isTypeDependent { continue }
       
-      var maybeNext: (def: Value, path: SmallProjectionPath)? = nil
+      var maybeNext = resultPath(addr: use, path: path)
       
-      let user = use.instruction
-      switch user {
-      case let sea as StructElementAddrInst:
-        if let nextPath = path.popIfMatches(.structField, index: sea.fieldIndex) {
-          maybeNext = (sea, nextPath)
+      switch maybeNext {
+      case .unmatchedInstruction:
+        switch use.instruction {
+        case let br as BranchInst:
+          let val = br.getArgument(for: use)
+          if let path = shouldRecomputeDown(value: val, path: path) {
+            maybeNext = .some(val, path)
+          }
+        case let cbr as CondBranchInst:
+          // TODO: ?
+          assert(use.index != 0, "should not visit trivial non-address values")
+          let val = cbr.getArgument(for: use)
+          if let path = shouldRecomputeDown(value: val, path: path) {
+            maybeNext = .some(val, path)
+          }
+        default:
+          break
         }
-      case let tea as TupleElementAddrInst:
-        if let nextPath = path.popIfMatches(.tupleField, index: tea.fieldIndex) {
-          maybeNext = (tea, nextPath)
-        }
-      case let br as BranchInst:
-        let val = br.getArgument(for: use)
-        if let path = shouldRecomputeDown(value: val, path: path) {
-          maybeNext = (val, path)
-        }
-      // Forwarding instructions
-      case is InitExistentialAddrInst, is OpenExistentialAddrInst, is BeginAccessInst,
-        is PointerToAddressInst, is AddressToPointerInst, is IndexAddrInst:
-        // Forwarding instructions
-        maybeNext = (user as! SingleValueInstruction, path)
-      case let mdi as MarkDependenceInst:
-        // Forwarding instruction if use is the first operand
-        if use.index == 0 {
-          maybeNext = (mdi, path)
-        }
-      default:
+      case .unmatchedPath:
+        TODO("Inconsistent state? Path (\(path) does not match instruction \(use)")
+      case .some(_, _):
         break
       }
       
-      let isLeaf = maybeNext == nil
+      let nextStep = visitUse(ofAddress: use, path: path,
+                              isLeaf: maybeNext.isUnmatchedInstruction)
       
-      let nextStep = visitUse(ofAddress: use, path: path, isLeaf: isLeaf)
-      
-      if let next = maybeNext, nextStep == .continueWalk {
-        if walkDown(address: next.def, path: next.path) {
+      if case let .some(addr, p) = maybeNext, nextStep == .continueWalk {
+        if walkDown(address: addr, path: p) {
           // Client requests to not visit the other uses
           return true
         }
@@ -345,8 +282,9 @@ extension AddressDefUseWalker {
         // Client requests to not visit the other uses
         return true
       } else {
-        // nextStep == .ignore
-        // Nothing to do. Client might have returned .continueWalk but there is no follow
+        // 3b. nextStep == .ignore. Nothing to do.
+        //     Client might have returned `.continueWalk` but there is no follow
+        assert(nextStep == .ignore, "Cannot continue walk")
       }
     }
     return false
@@ -366,57 +304,65 @@ extension AddressUseDefWalker {
     var current = (def, path)
     
     while true {
-      
+      let (addr, p) = current
       // 1. First compute if we will continue the walk and what will be the
       //    `next` `operand` and `path` so we can pass `isRoot` to the `visitAddressDef` of the _current_ definition.
-      var maybeNext: (operand: Value, path: SmallProjectionPath)? = nil
-      
-      let (val, p) = current
-      switch val {
-      case let sea as StructElementAddrInst:
-        maybeNext = (sea.operand, p.push(.structField, index: sea.fieldIndex))
-      case let tea as TupleElementAddrInst:
-        maybeNext = (tea.operand, p.push(.tupleField, index: tea.fieldIndex))
-      // Forwarding instructions
-      case is InitExistentialAddrInst, is OpenExistentialAddrInst, is BeginAccessInst,
-        is PointerToAddressInst, is AddressToPointerInst, is IndexAddrInst:
-        maybeNext = ((val as! Instruction).operands[0].value, p)
-      case let mdi as MarkDependenceInst:
-        maybeNext = (mdi.operands[0].value, p)
-      case let arg as BlockArgument:
-        if arg.isPhiArgument {
-          let nextStep = visitDef(ofAddress: arg, path: p, isRoot: false)
-          switch nextStep {
-          case .abortWalk, .ignore:
-            return nextStep == .abortWalk
-          case .continueWalk:
-            for incoming in arg.incomingPhiValues {
-              if let path = shouldRecomputeUp(value: incoming, path: p),
-                 walkUp(address: incoming, path: path) {
-                return true
+      var maybeNext = operandDefinition(addr: addr, path: p)
+      switch maybeNext {
+      case .unmatchedInstruction:
+        if let arg = addr as? BlockArgument {
+          if arg.isPhiArgument {
+            let nextStep = visitDef(ofAddress: arg, path: path, isRoot: false)
+            switch nextStep {
+            case .abortWalk, .ignore: return nextStep == .abortWalk
+            case .continueWalk:
+              for incoming in arg.incomingPhiValues {
+                if let path = shouldRecomputeUp(value: incoming, path: p),
+                   walkUp(address: incoming, path: path) {
+                  return true
+                }
               }
+              return false
             }
-            return false
+          } else {
+            let block = arg.block
+            switch block.singlePredecessor!.terminator {
+            case let se as SwitchEnumInst:
+              if let caseIdx = se.getUniqueCase(forSuccessor: block) {
+                maybeNext = .some(se.enumOp, p.push(.enumCase, index: caseIdx))
+              } else {
+                // TODO: ("EscapeInfo returns .abortWalk (isEscaping)")
+                // here instead we leave maybeNext as .unmatchedInstruction
+                // so the caller knows that this is a root according
+                // to the traversal and therefore can abort
+              }
+            case is TryApplyInst:
+              TODO("Case TryApplyInst should be handled in EscapeInfo")
+            default:
+              break
+            }
           }
-        } else {
-          TODO("enum/try_apply block argument")
         }
-      default:
+      case .unmatchedPath:
+        TODO("Inconsistent state? Path (\(path) does not match instruction \(def)")
+      case .some(_, _):
         break
       }
       
       // 2. Visit the _current_ definition
-      let nextStep = visitDef(ofAddress: val, path: p, isRoot: maybeNext == nil)
+      let nextStep = visitDef(ofAddress: addr, path: p,
+                              isRoot: maybeNext.isUnmatchedInstruction)
       
-      if let next = maybeNext, nextStep == .continueWalk {
+      if case let .some(nextAddr, nextPath) = maybeNext, nextStep == .continueWalk {
         // 3a. Set current to next and continue the walk
-        current = (next.operand, next.path)
+        current = (nextAddr, nextPath)
       } else if nextStep == .abortWalk {
         // Client requests to not visit the other uses
         return true
       } else {
-        // nextStep == .ignore
-        // Nothing to do. Client might have returned `.continueWalk` but there is no follow
+        // 3b. nextStep == .ignore. Nothing to do.
+        //     Client might have returned `.continueWalk` but there is no follow
+        assert(nextStep == .ignore, "Cannot continue walk")
         return false
       }
     }
