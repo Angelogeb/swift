@@ -12,20 +12,10 @@
 
 import SIL
 
-func TODO(_ message: String = "Unhandled TODO", fun: String = #function,
-          file: String = #file, line: Int = #line) -> Never {
-  fatalError("\(#function)\(file):\(line) \(fun) \(message)")
-}
-
-func FATAL(_ message: String = "", fun: String = #function,
-          file: String = #file, line: Int = #line) -> Never {
-  fatalError("\(#function)\(file):\(line) \(fun) \(message)")
-}
-
-public enum WalkResult {
-  /// skip traversal
-  case ignore
-  /// stop the walk, add the current use/def and path to the result
+enum WalkResult {
+  /// stop walking further for the current use/definition
+  case stopWalk
+  /// abort the walk for all uses/definitions
   case abortWalk
   /// continue the walk
   case continueWalk
@@ -45,23 +35,9 @@ protocol ValueDefUseWalker : MemoizedDown {
 }
 
 extension ValueDefUseWalker {
-  private mutating
-  func visitAndWalkDown(_ operand: Operand, path: SmallProjectionPath, values: Instruction.Results,
-                        newPath: SmallProjectionPath) -> Bool {
-    let maybeContinue = visitUse(ofValue: operand, path: path, isLeaf: false)
-    switch maybeContinue {
-    case .continueWalk:
-      for result in values {
-        // TODO: insert shouldRecomputeDown call?
-        // EscapeInfo doesn't
-        if walkDown(value: result, path: newPath) {
-          return true
-        }
-      }
-      return false
-    default:
-      return maybeContinue == .abortWalk
-    }
+  mutating
+  func visitUse(ofValue operand: Operand, path: SmallProjectionPath, isLeaf: Bool) -> WalkResult {
+    return .continueWalk
   }
   
   /// Note: keep it symmetric to `ValueUseDefWalker.walkUp`
@@ -80,10 +56,10 @@ extension ValueDefUseWalker {
         let inst = operand.instruction
         if path.topMatchesAnyValueField &&
             (inst is DestructureStructInst || inst is DestructureTupleInst) {
-          visitAborted = visitAndWalkDown(operand, path: path,
+          visitAborted = handleDestructureAnyValueField(operand, path: path,
                                           values: inst.results, newPath: path)
         } else {
-          FATAL("Inconsistent state? Path (\(path) does not match instruction \(operand.instruction)")
+          fatalError("Inconsistent state? Path (\(path) does not match instruction \(operand.instruction)")
         }
       case .unmatchedInstruction:
         switch operand.instruction {
@@ -117,19 +93,41 @@ extension ValueDefUseWalker {
         // We still have to visit the current use
         let nextStep = visitUse(ofValue: operand, path: path,
                                 isLeaf: maybeLinearNext.isUnmatchedInstruction)
-        if nextStep == .abortWalk {
+        switch nextStep {
+        case .stopWalk:
+          break
+        case .abortWalk:
           return true
-        } else if case let .some(nextValue, nextPath) = maybeLinearNext,
-                  nextStep == .continueWalk &&
-                  walkDown(value: nextValue, path: nextPath) {
-          return true
-        } else {
-          //     Client might have returned `.continueWalk` but there is no follow
-          assert(nextStep == .ignore, "Cannot continue walk")
+        case .continueWalk:
+          if case let .some(nextValue, nextPath) = maybeLinearNext,
+             walkDown(value: nextValue, path: nextPath) {
+            return true
+          }
         }
       }
     }
     return false
+  }
+  
+  private mutating
+  func handleDestructureAnyValueField(_ operand: Operand, path: SmallProjectionPath, values: Instruction.Results,
+                        newPath: SmallProjectionPath) -> Bool {
+    let maybeContinue = visitUse(ofValue: operand, path: path, isLeaf: false)
+    switch maybeContinue {
+    case .abortWalk:
+      return true
+    case .stopWalk:
+      return false
+    case .continueWalk:
+      for result in values {
+        // TODO: insert shouldRecomputeDown call?
+        // EscapeInfo doesn't
+        if walkDown(value: result, path: newPath) {
+          return true
+        }
+      }
+      return false
+    }
   }
 }
 
@@ -140,23 +138,12 @@ protocol ValueUseDefWalker : MemoizedUp {
 }
 
 extension ValueUseDefWalker {
-  private mutating
-  func visitAndWalkUp(value def: Value, path: SmallProjectionPath, operands: OperandArray,
-                      newPath: SmallProjectionPath) -> Bool {
-    let nextStep = visitDef(ofValue: def, path: path, isRoot: false)
-    switch nextStep {
-    case .abortWalk, .ignore:
-      return nextStep == .abortWalk
-    case .continueWalk:
-      for op in operands {
-        if let path = shouldRecomputeUp(value: op.value, path: newPath),
-           walkUp(value: op.value, path: path) {
-          return true
-        }
-      }
-      return false
-    }
+  mutating
+  func visitDef(ofValue value: Value, path: SmallProjectionPath,
+                isRoot: Bool)  -> WalkResult {
+    return .continueWalk
   }
+  
   /// - Returns: true if the walk was aborted
   /// Note: keep it symmetric to `ValueDefUseWalker.walkDown`
   mutating
@@ -179,14 +166,17 @@ extension ValueUseDefWalker {
           return visitAndWalkUp(value: value, path: path,
                                 operands: (value as! Instruction).operands, newPath: path)
         } else {
-          FATAL("Inconsistent state? Path (\(path) does not match instruction \(value)")
+          fatalError("Inconsistent state? Path (\(path) does not match instruction \(value)")
         }
       case .unmatchedInstruction:
         if let arg = value as? BlockArgument {
           if arg.isPhiArgument {
             let nextStep = visitDef(ofValue: arg, path: path, isRoot: false)
             switch nextStep {
-            case .abortWalk, .ignore: return nextStep == .abortWalk
+            case .abortWalk:
+              return true
+            case .stopWalk:
+              return false
             case .continueWalk:
               for incoming in arg.incomingPhiValues {
                 if let path = shouldRecomputeUp(value: incoming, path: path),
@@ -209,7 +199,7 @@ extension ValueUseDefWalker {
                 // to the traversal and therefore can abort
               }
             case is TryApplyInst:
-              TODO("Remember to handle TryApplyInst in clients")
+              fatalError("Remember to handle TryApplyInst in clients")
             default:
               break
             }
@@ -223,16 +213,36 @@ extension ValueUseDefWalker {
       let nextStep = visitDef(ofValue: value, path: path,
                               isRoot: maybeNext.isUnmatchedInstruction)
       
-      if case .some(let val, let p) = maybeNext, nextStep == .continueWalk {
-        // 3a. Set current to next and continue the walk
-        current = (val, p)
-      } else if nextStep == .abortWalk {
+      switch nextStep {
+      case .stopWalk:
+        return false
+      case .abortWalk:
         return true
-      } else {
-        // 3b. nextStep == .ignore. Nothing to do.
-        //     Client might have returned `.continueWalk` but there is no follow
-        assert(nextStep == .ignore, "Cannot continue walk")
+      case .continueWalk:
+        if case let .some(val, p) = maybeNext {
+          current = (val, p)
+        }
       }
+    }
+  }
+
+  private mutating
+  func visitAndWalkUp(value def: Value, path: SmallProjectionPath, operands: OperandArray,
+                      newPath: SmallProjectionPath) -> Bool {
+    let nextStep = visitDef(ofValue: def, path: path, isRoot: false)
+    switch nextStep {
+    case .abortWalk:
+      return true
+    case .stopWalk:
+      return false
+    case .continueWalk:
+      for op in operands {
+        if let path = shouldRecomputeUp(value: op.value, path: newPath),
+           walkUp(value: op.value, path: path) {
+          return true
+        }
+      }
+      return false
     }
   }
 }
@@ -244,6 +254,13 @@ protocol AddressDefUseWalker : MemoizedDown {
 }
 
 extension AddressDefUseWalker {
+  
+  mutating
+  func visitUse(ofAddress operand: Operand, path: SmallProjectionPath,
+                isLeaf: Bool) -> WalkResult {
+    return .continueWalk
+  }
+  
   /// - Returns: if the walk is aborted
   // Note: keep it symmetric to `AddressUseDefWalker.walkUp`
   mutating
@@ -251,46 +268,28 @@ extension AddressDefUseWalker {
     for use in def.uses {
       if use.isTypeDependent { continue }
       
-      var maybeNext = resultPath(addr: use, path: path)
+      let maybeNext = resultPath(addr: use, path: path)
       
       switch maybeNext {
-      case .unmatchedInstruction:
-        switch use.instruction {
-        case let br as BranchInst:
-          let val = br.getArgument(for: use)
-          if let path = shouldRecomputeDown(value: val, path: path) {
-            maybeNext = .some(val, path)
-          }
-        case let cbr as CondBranchInst:
-          assert(use.index != 0, "should not visit trivial non-address values")
-          let val = cbr.getArgument(for: use)
-          if let path = shouldRecomputeDown(value: val, path: path) {
-            maybeNext = .some(val, path)
-          }
-        default:
-          break
-        }
       case .unmatchedPath:
-        FATAL("Inconsistent state? Path (\(path) does not match instruction \(use)")
-      case .some(_, _):
+        fatalError("Inconsistent state? Path (\(path) does not match instruction \(use)")
+      default:
         break
       }
       
       let nextStep = visitUse(ofAddress: use, path: path,
                               isLeaf: maybeNext.isUnmatchedInstruction)
       
-      if case let .some(addr, p) = maybeNext, nextStep == .continueWalk {
-        if walkDown(address: addr, path: p) {
-          // Client requests to not visit the other uses
+      switch nextStep {
+      case .stopWalk:
+        break
+      case .abortWalk:
+        return true
+      case .continueWalk:
+        if case let .some(addr, p) = maybeNext,
+          walkDown(address: addr, path: p) {
           return true
         }
-      } else if nextStep == .abortWalk {
-        // Client requests to not visit the other uses
-        return true
-      } else {
-        // 3b. nextStep == .ignore. Nothing to do.
-        //     Client might have returned `.continueWalk` but there is no follow
-        assert(nextStep == .ignore, "Cannot continue walk")
       }
     }
     return false
@@ -303,6 +302,11 @@ protocol AddressUseDefWalker : MemoizedUp {
 }
 
 extension AddressUseDefWalker {
+  mutating
+  func visitDef(ofAddress: Value, path: SmallProjectionPath, isRoot: Bool) -> WalkResult {
+    return .continueWalk
+  }
+  
   /// - Returns: true if the walk was aborted
   /// Note: keep it symmetric to `AddressDefUseWalker.walkDown`
   mutating
@@ -320,7 +324,10 @@ extension AddressUseDefWalker {
           if arg.isPhiArgument {
             let nextStep = visitDef(ofAddress: arg, path: path, isRoot: false)
             switch nextStep {
-            case .abortWalk, .ignore: return nextStep == .abortWalk
+            case .abortWalk:
+              return true
+            case .stopWalk:
+              return false
             case .continueWalk:
               for incoming in arg.incomingPhiValues {
                 if let path = shouldRecomputeUp(value: incoming, path: p),
@@ -343,14 +350,14 @@ extension AddressUseDefWalker {
                 // to the traversal and therefore can abort
               }
             case is TryApplyInst:
-              TODO("Remember to handle TryApplyInst in clients")
+              fatalError("Remember to handle TryApplyInst in clients")
             default:
               break
             }
           }
         }
       case .unmatchedPath:
-        FATAL("Inconsistent state? Path (\(path) does not match instruction \(def)")
+        fatalError("Inconsistent state? Path (\(path) does not match instruction \(def)")
       case .some(_, _):
         break
       }
@@ -359,17 +366,15 @@ extension AddressUseDefWalker {
       let nextStep = visitDef(ofAddress: addr, path: p,
                               isRoot: maybeNext.isUnmatchedInstruction)
       
-      if case let .some(nextAddr, nextPath) = maybeNext, nextStep == .continueWalk {
-        // 3a. Set current to next and continue the walk
-        current = (nextAddr, nextPath)
-      } else if nextStep == .abortWalk {
-        // Client requests to not visit the other uses
-        return true
-      } else {
-        // 3b. nextStep == .ignore. Nothing to do.
-        //     Client might have returned `.continueWalk` but there is no follow
-        assert(nextStep == .ignore, "Cannot continue walk")
+      switch nextStep {
+      case .stopWalk:
         return false
+      case .abortWalk:
+        return true
+      case .continueWalk:
+        if case let .some(nextAddr, nextPath) = maybeNext {
+          current = (nextAddr, nextPath)
+        }
       }
     }
   }
