@@ -14,7 +14,12 @@ import SIL
 
 func TODO(_ message: String = "Unhandled TODO", fun: String = #function,
           file: String = #file, line: Int = #line) -> Never {
-  fatalError("\(file):\(line) \(fun) \(message)")
+  fatalError("\(#function)\(file):\(line) \(fun) \(message)")
+}
+
+func FATAL(_ message: String = "", fun: String = #function,
+          file: String = #file, line: Int = #line) -> Never {
+  fatalError("\(#function)\(file):\(line) \(fun) \(message)")
 }
 
 public enum WalkResult {
@@ -47,6 +52,8 @@ extension ValueDefUseWalker {
     switch maybeContinue {
     case .continueWalk:
       for result in values {
+        // TODO: insert shouldRecomputeDown call?
+        // EscapeInfo doesn't
         if walkDown(value: result, path: newPath) {
           return true
         }
@@ -71,11 +78,12 @@ extension ValueDefUseWalker {
       switch maybeLinearNext {
       case .unmatchedPath:
         let inst = operand.instruction
-        if path.topMatchesAnyValueField && (inst is DestructureStructInst || inst is DestructureTupleInst) {
+        if path.topMatchesAnyValueField &&
+            (inst is DestructureStructInst || inst is DestructureTupleInst) {
           visitAborted = visitAndWalkDown(operand, path: path,
                                           values: inst.results, newPath: path)
         } else {
-          TODO("Inconsistent state? Path (\(path) does not match instruction \(operand.instruction)")
+          FATAL("Inconsistent state? Path (\(path) does not match instruction \(operand.instruction)")
         }
       case .unmatchedInstruction:
         switch operand.instruction {
@@ -85,7 +93,6 @@ extension ValueDefUseWalker {
             maybeLinearNext = .some(val, path)
           }
         case let cbr as CondBranchInst:
-          // TODO: ?
           assert(operand.index != 0, "should not visit trivial non-address values")
           let val = cbr.getArgument(for: operand)
           if let path = shouldRecomputeDown(value: val, path: path) {
@@ -172,7 +179,7 @@ extension ValueUseDefWalker {
           return visitAndWalkUp(value: value, path: path,
                                 operands: (value as! Instruction).operands, newPath: path)
         } else {
-          TODO("Inconsistent state? Path (\(path) does not match instruction \(value)")
+          FATAL("Inconsistent state? Path (\(path) does not match instruction \(value)")
         }
       case .unmatchedInstruction:
         if let arg = value as? BlockArgument {
@@ -196,13 +203,13 @@ extension ValueUseDefWalker {
               if let caseIdx = se.getUniqueCase(forSuccessor: block) {
                 maybeNext = .some(se.enumOp, path.push(.enumCase, index: caseIdx))
               } else {
-                // TODO: ("EscapeInfo returns .abortWalk (isEscaping)")
+                // NOTE: ("EscapeInfo returns .abortWalk (isEscaping)")
                 // here instead we leave maybeNext as .unmatchedInstruction
                 // so the caller knows that this is a root according
                 // to the traversal and therefore can abort
               }
             case is TryApplyInst:
-              TODO("Case TryApplyInst should be handled in EscapeInfo")
+              TODO("Remember to handle TryApplyInst in clients")
             default:
               break
             }
@@ -255,7 +262,6 @@ extension AddressDefUseWalker {
             maybeNext = .some(val, path)
           }
         case let cbr as CondBranchInst:
-          // TODO: ?
           assert(use.index != 0, "should not visit trivial non-address values")
           let val = cbr.getArgument(for: use)
           if let path = shouldRecomputeDown(value: val, path: path) {
@@ -265,7 +271,7 @@ extension AddressDefUseWalker {
           break
         }
       case .unmatchedPath:
-        TODO("Inconsistent state? Path (\(path) does not match instruction \(use)")
+        FATAL("Inconsistent state? Path (\(path) does not match instruction \(use)")
       case .some(_, _):
         break
       }
@@ -331,20 +337,20 @@ extension AddressUseDefWalker {
               if let caseIdx = se.getUniqueCase(forSuccessor: block) {
                 maybeNext = .some(se.enumOp, p.push(.enumCase, index: caseIdx))
               } else {
-                // TODO: ("EscapeInfo returns .abortWalk (isEscaping)")
+                // NOTE: ("EscapeInfo returns .abortWalk (isEscaping)")
                 // here instead we leave maybeNext as .unmatchedInstruction
                 // so the caller knows that this is a root according
                 // to the traversal and therefore can abort
               }
             case is TryApplyInst:
-              TODO("Case TryApplyInst should be handled in EscapeInfo")
+              TODO("Remember to handle TryApplyInst in clients")
             default:
               break
             }
           }
         }
       case .unmatchedPath:
-        TODO("Inconsistent state? Path (\(path) does not match instruction \(def)")
+        FATAL("Inconsistent state? Path (\(path) does not match instruction \(def)")
       case .some(_, _):
         break
       }
