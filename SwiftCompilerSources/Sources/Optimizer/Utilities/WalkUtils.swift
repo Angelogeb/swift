@@ -21,27 +21,33 @@ enum WalkResult {
   case continueWalk
 }
 
-protocol MemoizedUp {
-  mutating func shouldRecomputeUp(value def: Value, path: SmallProjectionPath) -> SmallProjectionPath?
-}
-
-protocol MemoizedDown {
-  mutating func shouldRecomputeDown(value def: Value, path: SmallProjectionPath) -> SmallProjectionPath?
-}
-
-protocol ValueDefUseWalker : MemoizedDown {
+protocol DefUseWalker {
   mutating
-  func visitUse(ofValue operand: Operand, path: SmallProjectionPath, isLeaf: Bool) -> WalkResult
+  func shouldRecomputeDown(value def: Value, path: SmallProjectionPath) -> SmallProjectionPath?
+  
+  mutating
+  func visitUse(ofValue operand: Operand, path: SmallProjectionPath,
+                isLeaf: Bool) -> WalkResult
+  
+  mutating
+  func visitUse(ofAddress operand: Operand, path: SmallProjectionPath,
+                isLeaf: Bool) -> WalkResult
 }
 
-extension ValueDefUseWalker {
+extension DefUseWalker {
   mutating
   func visitUse(ofValue operand: Operand, path: SmallProjectionPath, isLeaf: Bool) -> WalkResult {
     return .continueWalk
   }
   
+  mutating
+  func visitUse(ofAddress operand: Operand, path: SmallProjectionPath,
+                isLeaf: Bool) -> WalkResult {
+    return .continueWalk
+  }
+  
   /// - Returns: true if the walk was aborted
-  // Note: keep it symmetric to `ValueUseDefWalker.walkUp`
+  // Note: keep it symmetric to `UseDefWalker.walkUp(value:`
   mutating
   func walkDown(value def: Value, path: SmallProjectionPath) -> Bool {
     for operand in def.uses {
@@ -136,6 +142,61 @@ extension ValueDefUseWalker {
     return false
   }
   
+  /// - Returns: if the walk is aborted
+  // Note: keep it symmetric to `UseDefWalker.walkUp(address:`
+  mutating
+  func walkDown(address def: Value, path: SmallProjectionPath) -> Bool {
+    for use in def.uses {
+      if use.isTypeDependent { continue }
+      
+      var maybeNext: (Value, SmallProjectionPath)?
+      
+      let instruction = use.instruction
+      switch instruction {
+      // MARK: Address to Address Projections
+      case let sea as StructElementAddrInst:
+        if let newPath = path.popIfMatches(.structField, index: sea.fieldIndex) {
+          maybeNext = (sea, newPath)
+        }
+      case let tea as TupleElementAddrInst:
+        if let newPath = path.popIfMatches(.tupleField, index: tea.fieldIndex) {
+          maybeNext = (tea, newPath)
+        }
+      case is InitEnumDataAddrInst, is UncheckedTakeEnumDataAddrInst:
+        let ei = instruction as! EnumInst
+        if let newPath = path.popIfMatches(.enumCase, index: ei.caseIndex) {
+          maybeNext = (ei, newPath)
+        }
+      // MARK: Address to Address Forwarding Instructions
+      case is InitExistentialAddrInst, is OpenExistentialAddrInst, is BeginAccessInst,
+           is PointerToAddressInst, is AddressToPointerInst, is IndexAddrInst:
+        maybeNext = (instruction as! SingleValueInstruction, path)
+      case let mdi as MarkDependenceInst:
+        if use.index == 0 {
+          maybeNext = (mdi, path)
+        }
+      default:
+        break
+      }
+      
+      let nextStep = visitUse(ofAddress: use, path: path,
+                              isLeaf: maybeNext == nil)
+      
+      switch nextStep {
+      case .stopWalk:
+        break
+      case .abortWalk:
+        return true
+      case .continueWalk:
+        if let (addr, p) = maybeNext,
+          walkDown(address: addr, path: p) {
+          return true
+        }
+      }
+    }
+    return false
+  }
+  
   private mutating
   func handleDestructureAnyValueField(_ operand: Operand, path: SmallProjectionPath, values: Instruction.Results,
                         newPath: SmallProjectionPath) -> Bool {
@@ -158,21 +219,33 @@ extension ValueDefUseWalker {
   }
 }
 
-protocol ValueUseDefWalker : MemoizedUp {
+protocol UseDefWalker {
+  mutating
+  func shouldRecomputeUp(value def: Value, path: SmallProjectionPath) -> SmallProjectionPath?
+  
   mutating
   func visitDef(ofValue value: Value, path: SmallProjectionPath,
                 isRoot: Bool) -> WalkResult
+  
+  mutating
+  func visitDef(ofAddress: Value, path: SmallProjectionPath,
+                isRoot: Bool) -> WalkResult
 }
 
-extension ValueUseDefWalker {
+extension UseDefWalker {
   mutating
   func visitDef(ofValue value: Value, path: SmallProjectionPath,
                 isRoot: Bool)  -> WalkResult {
     return .continueWalk
   }
   
+  mutating
+  func visitDef(ofAddress: Value, path: SmallProjectionPath, isRoot: Bool) -> WalkResult {
+    return .continueWalk
+  }
+  
   /// - Returns: true if the walk was aborted
-  // Note: keep it symmetric to `ValueDefUseWalker.walkDown`
+  // Note: keep it symmetric to `DefUseWalker.walkDown(value:`
   mutating
   func walkUp(value def: Value, path: SmallProjectionPath) -> Bool {
     var current: (value: Value, path: SmallProjectionPath) = (def, path)
@@ -281,111 +354,9 @@ extension ValueUseDefWalker {
       }
     }
   }
-
-  private mutating
-  func visitAndWalkUp(value def: Value, path: SmallProjectionPath, operands: OperandArray,
-                      newPath: SmallProjectionPath) -> Bool {
-    let nextStep = visitDef(ofValue: def, path: path, isRoot: false)
-    switch nextStep {
-    case .abortWalk:
-      return true
-    case .stopWalk:
-      return false
-    case .continueWalk:
-      for op in operands {
-        if let path = shouldRecomputeUp(value: op.value, path: newPath),
-           walkUp(value: op.value, path: path) {
-          return true
-        }
-      }
-      return false
-    }
-  }
-}
-
-protocol AddressDefUseWalker : MemoizedDown {
-  mutating
-  func visitUse(ofAddress operand: Operand, path: SmallProjectionPath,
-                isLeaf: Bool) -> WalkResult
-}
-
-extension AddressDefUseWalker {
-  
-  mutating
-  func visitUse(ofAddress operand: Operand, path: SmallProjectionPath,
-                isLeaf: Bool) -> WalkResult {
-    return .continueWalk
-  }
-  
-  /// - Returns: if the walk is aborted
-  // Note: keep it symmetric to `AddressUseDefWalker.walkUp`
-  mutating
-  func walkDown(address def: Value, path: SmallProjectionPath) -> Bool {
-    for use in def.uses {
-      if use.isTypeDependent { continue }
-      
-      var maybeNext: (Value, SmallProjectionPath)?
-      
-      let instruction = use.instruction
-      switch instruction {
-      // MARK: Address to Address Projections
-      case let sea as StructElementAddrInst:
-        if let newPath = path.popIfMatches(.structField, index: sea.fieldIndex) {
-          maybeNext = (sea, newPath)
-        }
-      case let tea as TupleElementAddrInst:
-        if let newPath = path.popIfMatches(.tupleField, index: tea.fieldIndex) {
-          maybeNext = (tea, newPath)
-        }
-      case is InitEnumDataAddrInst, is UncheckedTakeEnumDataAddrInst:
-        let ei = instruction as! EnumInst
-        if let newPath = path.popIfMatches(.enumCase, index: ei.caseIndex) {
-          maybeNext = (ei, newPath)
-        }
-      // MARK: Address to Address Forwarding Instructions
-      case is InitExistentialAddrInst, is OpenExistentialAddrInst, is BeginAccessInst,
-           is PointerToAddressInst, is AddressToPointerInst, is IndexAddrInst:
-        maybeNext = (instruction as! SingleValueInstruction, path)
-      case let mdi as MarkDependenceInst:
-        if use.index == 0 {
-          maybeNext = (mdi, path)
-        }
-      default:
-        break
-      }
-      
-      let nextStep = visitUse(ofAddress: use, path: path,
-                              isLeaf: maybeNext == nil)
-      
-      switch nextStep {
-      case .stopWalk:
-        break
-      case .abortWalk:
-        return true
-      case .continueWalk:
-        if let (addr, p) = maybeNext,
-          walkDown(address: addr, path: p) {
-          return true
-        }
-      }
-    }
-    return false
-  }
-}
-
-protocol AddressUseDefWalker : MemoizedUp {
-  mutating
-  func visitDef(ofAddress: Value, path: SmallProjectionPath, isRoot: Bool) -> WalkResult
-}
-
-extension AddressUseDefWalker {
-  mutating
-  func visitDef(ofAddress: Value, path: SmallProjectionPath, isRoot: Bool) -> WalkResult {
-    return .continueWalk
-  }
   
   /// - Returns: true if the walk was aborted
-  // Note: keep it symmetric to `AddressDefUseWalker.walkDown`
+  // Note: keep it symmetric to `DefUseWalker.walkDown(address:`
   mutating
   func walkUp(address def: Value, path: SmallProjectionPath) -> Bool {
     var current = (def, path)
@@ -426,6 +397,26 @@ extension AddressUseDefWalker {
           current = (nextAddr, nextPath)
         }
       }
+    }
+  }
+
+  private mutating
+  func visitAndWalkUp(value def: Value, path: SmallProjectionPath, operands: OperandArray,
+                      newPath: SmallProjectionPath) -> Bool {
+    let nextStep = visitDef(ofValue: def, path: path, isRoot: false)
+    switch nextStep {
+    case .abortWalk:
+      return true
+    case .stopWalk:
+      return false
+    case .continueWalk:
+      for op in operands {
+        if let path = shouldRecomputeUp(value: op.value, path: newPath),
+           walkUp(value: op.value, path: path) {
+          return true
+        }
+      }
+      return false
     }
   }
 }
