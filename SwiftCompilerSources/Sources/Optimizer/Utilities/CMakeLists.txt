@@ -9,5 +9,4 @@
 swift_compiler_sources(Optimizer
   EscapeInfo.swift
   OptUtils.swift
-  WalkUtils.swift
-  PathUtils.swift)
+  WalkUtils.swift)
