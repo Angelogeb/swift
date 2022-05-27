@@ -53,7 +53,6 @@ extension DefUseWalker {
     for operand in def.uses {
       if operand.isTypeDependent { continue }
       
-      var visited = false
       var maybeNext: (Value, SmallProjectionPath)?
       
       let instruction = operand.instruction
@@ -87,7 +86,7 @@ extension DefUseWalker {
                                             values: instruction.results, newPath: path) {
             return true
           }
-          visited = true
+          continue
         }
       case let dt as DestructureTupleInst:
         if let (index, newPath) = path.pop(kind: .tupleField) {
@@ -97,7 +96,7 @@ extension DefUseWalker {
                                             values: instruction.results, newPath: path) {
             return true
           }
-          visited = true
+          continue
         }
       // MARK: Non-Address to Non-Address Forwarding Instructions
       case is InitExistentialRefInst, is OpenExistentialRefInst,
@@ -123,19 +122,17 @@ extension DefUseWalker {
         break
       }
       
-      if !visited {
-        // We still have to visit the current use
-        let nextStep = visitUse(ofValue: operand, path: path, isLeaf: maybeNext == nil)
-        switch nextStep {
-        case .stopWalk:
-          break
-        case .abortWalk:
+      // We still have to visit the current use
+      let nextStep = visitUse(ofValue: operand, path: path, isLeaf: maybeNext == nil)
+      switch nextStep {
+      case .stopWalk:
+        break
+      case .abortWalk:
+        return true
+      case .continueWalk:
+        if let (nextValue, nextPath) = maybeNext,
+           walkDown(value: nextValue, path: nextPath) {
           return true
-        case .continueWalk:
-          if let (nextValue, nextPath) = maybeNext,
-             walkDown(value: nextValue, path: nextPath) {
-            return true
-          }
         }
       }
     }
