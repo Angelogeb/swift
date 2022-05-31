@@ -21,9 +21,9 @@ enum WalkResult {
   case continueWalk
 }
 
-enum WalkerNextStep {
-  case canContinue
-  case unmatchedInst
+enum WalkerVisitKind {
+  case interiorValue
+  case terminalValue
   case unmatchedPath
 }
 
@@ -33,23 +33,23 @@ protocol DefUseWalker {
   
   mutating
   func visitUse(ofValue operand: Operand, path: SmallProjectionPath,
-                next: WalkerNextStep) -> WalkResult
+                kind: WalkerVisitKind) -> WalkResult
   
   mutating
   func visitUse(ofAddress operand: Operand, path: SmallProjectionPath,
-                next: WalkerNextStep) -> WalkResult
+                kind: WalkerVisitKind) -> WalkResult
 }
 
 extension DefUseWalker {
   mutating
   func visitUse(ofValue operand: Operand, path: SmallProjectionPath,
-                next: WalkerNextStep) -> WalkResult {
+                kind: WalkerVisitKind) -> WalkResult {
     return .continueWalk
   }
   
   mutating
   func visitUse(ofAddress operand: Operand, path: SmallProjectionPath,
-                next: WalkerNextStep) -> WalkResult {
+                kind: WalkerVisitKind) -> WalkResult {
     return .continueWalk
   }
   
@@ -60,87 +60,82 @@ extension DefUseWalker {
     for operand in def.uses {
       if operand.isTypeDependent { continue }
       
-      let aborted: Bool
+      let abortWalk: Bool
       
       let instruction = operand.instruction
       switch instruction {
       // MARK: (trivially Non-Address to Non-Address) Constructions
       case let str as StructInst:
-        aborted = visitAndWalkDown(value: operand, path: path,
-                                  toWalk: (str, path.push(.structField, index: operand.index)),
-                                   next: .canContinue)
+        abortWalk = visitAndWalkDown(value: operand, path: path,
+                                   walkTo: (str, path.push(.structField, index: operand.index)),
+                                   next: .interiorValue)
       case let t as TupleInst:
-        aborted = visitAndWalkDown(value: operand, path: path,
-                                   toWalk: (t, path.push(.tupleField, index: operand.index)),
-                                   next: .canContinue)
+        abortWalk = visitAndWalkDown(value: operand, path: path,
+                                   walkTo: (t, path.push(.tupleField, index: operand.index)),
+                                   next: .interiorValue)
       case let e as EnumInst:
-        aborted = visitAndWalkDown(value: operand, path: path,
-                                   toWalk: (e, path.push(.enumCase, index: e.caseIndex)),
-                                   next: .canContinue)
+        abortWalk = visitAndWalkDown(value: operand, path: path,
+                                   walkTo: (e, path.push(.enumCase, index: e.caseIndex)),
+                                   next: .interiorValue)
       // MARK: Non-Address to Non-Address Projections
       case let se as StructExtractInst:
         if let newPath = path.popIfMatches(.structField, index: se.fieldIndex) {
-          aborted = visitAndWalkDown(value: operand, path: path,
-                                     toWalk: (se, newPath),
-                                     next: .canContinue)
+          abortWalk = visitAndWalkDown(value: operand, path: path,
+                                     walkTo: (se, newPath),
+                                     next: .interiorValue)
         } else {
-          aborted = visitAndWalkDown(value: operand, path: path,
-                                     toWalk: nil, next: .unmatchedPath)
+          abortWalk = visitUse(ofValue: operand, path: path, kind: .unmatchedPath) == .abortWalk
         }
       case let te as TupleExtractInst:
         if let newPath = path.popIfMatches(.tupleField, index: te.fieldIndex) {
-          aborted = visitAndWalkDown(value: operand, path: path,
-                                     toWalk: (te, newPath), next: .canContinue)
+          abortWalk = visitAndWalkDown(value: operand, path: path,
+                                     walkTo: (te, newPath), next: .interiorValue)
         } else {
-          aborted = visitAndWalkDown(value: operand, path: path,
-                                     toWalk: nil, next: .unmatchedPath)
+          abortWalk = visitUse(ofValue: operand, path: path, kind: .unmatchedPath) == .abortWalk
         }
       case let ued as UncheckedEnumDataInst:
         if let newPath = path.popIfMatches(.enumCase, index: ued.caseIndex) {
-          aborted = visitAndWalkDown(value: operand, path: path,
-                                     toWalk: (ued, newPath), next: .canContinue)
+          abortWalk = visitAndWalkDown(value: operand, path: path,
+                                     walkTo: (ued, newPath), next: .interiorValue)
         } else {
-          aborted = visitAndWalkDown(value: operand, path: path,
-                                     toWalk: nil, next: .unmatchedPath)
+          abortWalk = visitUse(ofValue: operand, path: path, kind: .unmatchedPath) == .abortWalk
         }
       // MARK: (trivially Non-Address to Non-Address) Multiresult Projections
       case let ds as DestructureStructInst:
         if let (index, newPath) = path.pop(kind: .structField) {
-          aborted = visitAndWalkDown(value: operand, path: path,
-                                     toWalk: (ds.results[index], newPath),
-                                     next: .canContinue)
+          abortWalk = visitAndWalkDown(value: operand, path: path,
+                                     walkTo: (ds.results[index], newPath),
+                                     next: .interiorValue)
         } else if path.topMatchesAnyValueField {
-          aborted = handleDestructureAnyValueField(operand, path: path,
+          abortWalk = handleDestructureAnyValueField(operand, path: path,
                                                    values: instruction.results, newPath: path)
         } else {
-          aborted = visitAndWalkDown(value: operand, path: path,
-                                     toWalk: nil, next: .unmatchedPath)
+          abortWalk = visitUse(ofValue: operand, path: path, kind: .unmatchedPath) == .abortWalk
         }
       case let dt as DestructureTupleInst:
         if let (index, newPath) = path.pop(kind: .tupleField) {
-          aborted = visitAndWalkDown(value: operand, path: path,
-                                     toWalk: (dt.results[index], newPath), next: .canContinue)
+          abortWalk = visitAndWalkDown(value: operand, path: path,
+                                     walkTo: (dt.results[index], newPath), next: .interiorValue)
         } else if path.topMatchesAnyValueField {
-          aborted = handleDestructureAnyValueField(operand, path: path,
+          abortWalk = handleDestructureAnyValueField(operand, path: path,
                                                    values: instruction.results, newPath: path)
         } else {
-          aborted = visitAndWalkDown(value: operand, path: path,
-                                     toWalk: nil, next: .unmatchedPath)
+          abortWalk = visitUse(ofValue: operand, path: path, kind: .unmatchedPath) == .abortWalk
         }
       // MARK: Non-Address to Non-Address Forwarding Instructions
       case is InitExistentialRefInst, is OpenExistentialRefInst,
            is BeginBorrowInst, is CopyValueInst,
            is UpcastInst, is UncheckedRefCastInst, is EndCOWMutationInst,
            is RefToBridgeObjectInst, is BridgeObjectToRefInst:
-        aborted = visitAndWalkDown(value: operand, path: path,
-                                   toWalk: (instruction as! SingleValueInstruction, path),
-                                   next: .canContinue)
+        abortWalk = visitAndWalkDown(value: operand, path: path,
+                                   walkTo: (instruction as! SingleValueInstruction, path),
+                                   next: .interiorValue)
       case let bcm as BeginCOWMutationInst:
-        aborted = visitAndWalkDown(value: operand, path: path,
-                                   toWalk: (bcm.bufferResult, path), next: .canContinue)
+        abortWalk = visitAndWalkDown(value: operand, path: path,
+                                   walkTo: (bcm.bufferResult, path), next: .interiorValue)
       // MARK: Non-Address Branching Instructions
       case let br as BranchInst:
-        let visitResult = visitUse(ofValue: operand, path: path, next: .canContinue)
+        let visitResult = visitUse(ofValue: operand, path: path, kind: .interiorValue)
         switch visitResult {
         case .stopWalk:
           continue
@@ -149,14 +144,14 @@ extension DefUseWalker {
         case .continueWalk:
           let val = br.getArgument(for: operand)
           if let path = shouldRecomputeDown(value: val, path: path) {
-            aborted = walkDown(value: val, path: path)
+            abortWalk = walkDown(value: val, path: path)
           } else {
             continue
           }
         }
       case let cbr as CondBranchInst:
         assert(operand.index != 0, "should not visit trivial non-address values")
-        let visitResult = visitUse(ofValue: operand, path: path, next: .canContinue)
+        let visitResult = visitUse(ofValue: operand, path: path, kind: .interiorValue)
         switch visitResult {
         case .stopWalk:
           continue
@@ -165,13 +160,13 @@ extension DefUseWalker {
         case .continueWalk:
           let val = cbr.getArgument(for: operand)
           if let path = shouldRecomputeDown(value: val, path: path) {
-            aborted = walkDown(value: val, path: path)
+            abortWalk = walkDown(value: val, path: path)
           } else {
             continue
           }
         }
       default:
-          let visitResult = visitUse(ofValue: operand, path: path, next: .unmatchedInst)
+          let visitResult = visitUse(ofValue: operand, path: path, kind: .terminalValue)
           switch visitResult {
           case .stopWalk:
             continue
@@ -182,7 +177,7 @@ extension DefUseWalker {
           }
       }
       
-      if aborted {
+      if abortWalk {
         return true
       }
     }
@@ -196,55 +191,50 @@ extension DefUseWalker {
     for use in def.uses {
       if use.isTypeDependent { continue }
       
-      let aborted: Bool
+      let abortWalk: Bool
       
       let instruction = use.instruction
       switch instruction {
       // MARK: Address to Address Projections
       case let sea as StructElementAddrInst:
         if let newPath = path.popIfMatches(.structField, index: sea.fieldIndex) {
-          aborted = visitAndWalkDown(address: use, path: path,
-                                     toWalk: (sea, newPath), next: .canContinue)
+          abortWalk = visitAndWalkDown(address: use, path: path,
+                                     walkTo: (sea, newPath), next: .interiorValue)
         } else {
-          aborted = visitAndWalkDown(address: use, path: path,
-                                     toWalk: nil, next: .unmatchedPath)
+          abortWalk = visitUse(ofAddress: use, path: path, kind: .unmatchedPath) == .abortWalk
         }
       case let tea as TupleElementAddrInst:
         if let newPath = path.popIfMatches(.tupleField, index: tea.fieldIndex) {
-          aborted = visitAndWalkDown(address: use, path: path,
-                                     toWalk: (tea, newPath), next: .canContinue)
+          abortWalk = visitAndWalkDown(address: use, path: path,
+                                     walkTo: (tea, newPath), next: .interiorValue)
         } else {
-          aborted = visitAndWalkDown(address: use, path: path,
-                                     toWalk: nil, next: .unmatchedPath)
+          abortWalk = visitUse(ofAddress: use, path: path, kind: .unmatchedPath) == .abortWalk
         }
       case is InitEnumDataAddrInst, is UncheckedTakeEnumDataAddrInst:
         let ei = instruction as! EnumInst
         if let newPath = path.popIfMatches(.enumCase, index: ei.caseIndex) {
-          aborted = visitAndWalkDown(address: use, path: path,
-                                     toWalk: (ei, newPath), next: .canContinue)
+          abortWalk = visitAndWalkDown(address: use, path: path,
+                                     walkTo: (ei, newPath), next: .interiorValue)
         } else {
-          aborted = visitAndWalkDown(address: use, path: path,
-                                     toWalk: nil, next: .unmatchedPath)
+          abortWalk = visitUse(ofAddress: use, path: path, kind: .unmatchedPath) == .abortWalk
         }
       // MARK: Address to Address Forwarding Instructions
       case is InitExistentialAddrInst, is OpenExistentialAddrInst, is BeginAccessInst,
            is PointerToAddressInst, is AddressToPointerInst, is IndexAddrInst:
-        aborted = visitAndWalkDown(address: use, path: path,
-                                   toWalk: (instruction as! SingleValueInstruction, path), next: .canContinue)
+        abortWalk = visitAndWalkDown(address: use, path: path,
+                                   walkTo: (instruction as! SingleValueInstruction, path), next: .interiorValue)
       case let mdi as MarkDependenceInst:
         if use.index == 0 {
-          aborted = visitAndWalkDown(address: use, path: path,
-                                     toWalk: (mdi, path), next: .canContinue)
+          abortWalk = visitAndWalkDown(address: use, path: path,
+                                     walkTo: (mdi, path), next: .interiorValue)
         } else {
-          aborted = visitAndWalkDown(address: use, path: path,
-                                     toWalk: nil, next: .unmatchedInst /* conservative */)
+          abortWalk = visitUse(ofAddress: use, path: path, kind: .terminalValue /* conservative */) == .abortWalk
         }
       default:
-        aborted = visitAndWalkDown(address: use, path: path,
-                                   toWalk: nil, next: .unmatchedInst)
+        abortWalk = visitUse(ofAddress: use, path: path, kind: .terminalValue) == .abortWalk
       }
       
-      if aborted {
+      if abortWalk {
         return true
       }
     }
@@ -254,47 +244,39 @@ extension DefUseWalker {
   private mutating
   func visitAndWalkDown(
     value operand: Operand, path: SmallProjectionPath,
-    toWalk: (value: Value, path: SmallProjectionPath)?, next: WalkerNextStep
+    walkTo: (value: Value, path: SmallProjectionPath), next: WalkerVisitKind
   ) -> Bool {
-    precondition(!(toWalk == nil && next == .canContinue), "Inconsistent arguments")
-    let visitResult = visitUse(ofValue: operand, path: path, next: next)
+    let visitResult = visitUse(ofValue: operand, path: path, kind: next)
     switch visitResult {
     case .stopWalk:
       return false
     case .abortWalk:
       return true
     case .continueWalk:
-      if let next = toWalk {
-        return walkDown(value: next.value, path: next.path)
-      }
+      return walkDown(value: walkTo.value, path: walkTo.path)
     }
-    return false
   }
   
   private mutating
   func visitAndWalkDown(
     address operand: Operand, path: SmallProjectionPath,
-    toWalk: (value: Value, path: SmallProjectionPath)?, next: WalkerNextStep
+    walkTo: (value: Value, path: SmallProjectionPath), next: WalkerVisitKind
   ) -> Bool {
-    precondition(!(toWalk == nil && next == .canContinue), "Inconsistent arguments")
-    let visitResult = visitUse(ofAddress: operand, path: path, next: next)
+    let visitResult = visitUse(ofAddress: operand, path: path, kind: next)
     switch visitResult {
     case .stopWalk:
       return false
     case .abortWalk:
       return true
     case .continueWalk:
-      if let next = toWalk {
-        return walkDown(address: next.value, path: next.path)
-      }
+      return walkDown(address: walkTo.value, path: walkTo.path)
     }
-    return false
   }
   
   private mutating
   func handleDestructureAnyValueField(_ operand: Operand, path: SmallProjectionPath, values: Instruction.Results,
                         newPath: SmallProjectionPath) -> Bool {
-    let maybeContinue = visitUse(ofValue: operand, path: path, next: .canContinue)
+    let maybeContinue = visitUse(ofValue: operand, path: path, kind: .interiorValue)
     switch maybeContinue {
     case .abortWalk:
       return true
@@ -319,23 +301,23 @@ protocol UseDefWalker {
   
   mutating
   func visitDef(ofValue value: Value, path: SmallProjectionPath,
-                isRoot: WalkerNextStep) -> WalkResult
+                kind: WalkerVisitKind) -> WalkResult
   
   mutating
   func visitDef(ofAddress: Value, path: SmallProjectionPath,
-                isRoot: WalkerNextStep) -> WalkResult
+                kind: WalkerVisitKind) -> WalkResult
 }
 
 extension UseDefWalker {
   mutating
   func visitDef(ofValue value: Value, path: SmallProjectionPath,
-                isRoot: WalkerNextStep)  -> WalkResult {
+                kind: WalkerVisitKind)  -> WalkResult {
     return .continueWalk
   }
   
   mutating
   func visitDef(ofAddress: Value, path: SmallProjectionPath,
-                isRoot: WalkerNextStep) -> WalkResult {
+                kind: WalkerVisitKind) -> WalkResult {
     return .continueWalk
   }
   
@@ -347,77 +329,62 @@ extension UseDefWalker {
     
     while true {
       
-      let maybeNext: (Value, SmallProjectionPath)?
-      let nextArg: WalkerNextStep
+      let next: (value: Value, path: SmallProjectionPath)
       
       let (value, path) = current
       switch value {
       // MARK: (trivially Non-Address to Non-Address) Constructions
       case let str as StructInst:
         if let (index, newPath) = path.pop(kind: .structField) {
-          maybeNext = (str.operands[index].value, newPath)
-          nextArg = .canContinue
+          next = (str.operands[index].value, newPath)
         } else if path.topMatchesAnyValueField {
           return handleAnyValueFieldUp(value: value, path: path, operands: str.operands)
         } else {
-          maybeNext = nil
-          nextArg = .unmatchedPath
+          return visitDef(ofValue: value, path: path, kind: .unmatchedPath) == .abortWalk
         }
       case let t as TupleInst:
         if let (index, newPath) = path.pop(kind: .tupleField) {
-          maybeNext = (t.operands[index].value, newPath)
-          nextArg = .canContinue
+          next = (t.operands[index].value, newPath)
         } else if path.topMatchesAnyValueField {
           return handleAnyValueFieldUp(value: value, path: path, operands: t.operands)
         } else {
-          maybeNext = nil
-          nextArg = .unmatchedPath
+          return visitDef(ofValue: value, path: path, kind: .unmatchedPath) == .abortWalk
         }
       case let e as EnumInst:
         if let newPath = path.popIfMatches(.enumCase, index: e.caseIndex),
            let operand = e.operand {
-          maybeNext = (operand, newPath)
-          nextArg = .canContinue
+          next = (operand, newPath)
         } else {
-          maybeNext = nil
-          nextArg = .unmatchedPath
+          return visitDef(ofValue: value, path: path, kind: .unmatchedPath) == .abortWalk
         }
       // MARK: Non-Address to Non-Address Projections
       case let se as StructExtractInst:
-        maybeNext = (se.operand, path.push(.structField, index: se.fieldIndex))
-        nextArg = .canContinue
+        next = (se.operand, path.push(.structField, index: se.fieldIndex))
       case let te as TupleExtractInst:
-        maybeNext = (te.operand, path.push(.tupleField, index: te.fieldIndex))
-        nextArg = .canContinue
+        next = (te.operand, path.push(.tupleField, index: te.fieldIndex))
       case let ued as UncheckedEnumDataInst:
-        maybeNext = (ued.operand, path.push(.enumCase, index: ued.caseIndex))
-        nextArg = .canContinue
+        next = (ued.operand, path.push(.enumCase, index: ued.caseIndex))
       case let mvr as MultipleValueInstructionResult:
         // MARK: (trivially Non-Address to Non-Address) Multiresult Projections
         if let ds = mvr.instruction as? DestructureStructInst {
-          maybeNext = (ds.operand, path.push(.structField, index: mvr.index))
-          nextArg = .canContinue
+          next = (ds.operand, path.push(.structField, index: mvr.index))
         } else if let dt = mvr.instruction as? DestructureTupleInst {
-          maybeNext = (dt.operand, path.push(.tupleField, index: mvr.index))
-          nextArg = .canContinue
+          next = (dt.operand, path.push(.tupleField, index: mvr.index))
         } else if let bcm = mvr.instruction as? BeginCOWMutationInst {
           // MARK: Non-Address to Non-Address Forwarding Instruction
-          maybeNext = (bcm.operand, path)
-          nextArg = .canContinue
+          next = (bcm.operand, path)
         } else {
-          maybeNext = nil
-          nextArg = .unmatchedInst
+          return visitDef(ofValue: value, path: path, kind: .terminalValue) == .abortWalk
         }
       // MARK: Non-Address to Non-Address Forwarding Instructions
       case is InitExistentialRefInst, is OpenExistentialRefInst,
            is BeginBorrowInst, is CopyValueInst,
            is UpcastInst, is UncheckedRefCastInst, is EndCOWMutationInst,
            is RefToBridgeObjectInst, is BridgeObjectToRefInst:
-        maybeNext = ((value as! Instruction).operands[0].value, path)
-        nextArg = .canContinue
+        next = ((value as! Instruction).operands[0].value, path)
       // MARK: Non-Address Block Arguments
       case let arg as BlockArgument where arg.isPhiArgument:
-        let nextStep = visitDef(ofValue: arg, path: path, isRoot: .canContinue)
+        let nextStep = visitDef(ofValue: arg, path: path, kind: .interiorValue)
         switch nextStep {
         case .abortWalk:
           return true
@@ -433,11 +400,10 @@ extension UseDefWalker {
           return false
         }
       default:
-        maybeNext = nil
-        nextArg = .unmatchedInst
+        return visitDef(ofValue: value, path: path, kind: .terminalValue) == .abortWalk
       }
       
-      let nextStep = visitDef(ofValue: value, path: path, isRoot: nextArg)
+      let nextStep = visitDef(ofValue: value, path: path, kind: .interiorValue)
       
       switch nextStep {
       case .stopWalk:
@@ -445,11 +411,7 @@ extension UseDefWalker {
       case .abortWalk:
         return true
       case .continueWalk:
-        if let (val, p) = maybeNext {
-          current = (val, p)
-        } else {
-          return false
-        }
+        current = (next.value, next.path)
       }
     }
   }
@@ -461,30 +423,29 @@ extension UseDefWalker {
     var current = (def, path)
     
     while true {
-      let maybeNext: (Value, SmallProjectionPath)?
+      let next: (addr: Value, path: SmallProjectionPath)
       
       let (addr, p) = current
       switch addr {
       // MARK: Address to Address Projections
       case let sea as StructElementAddrInst:
-        maybeNext = (sea.operand, path.push(.structField, index: sea.fieldIndex))
+        next = (sea.operand, path.push(.structField, index: sea.fieldIndex))
       case let tea as TupleElementAddrInst:
-        maybeNext = (tea.operand, path.push(.tupleField, index: tea.fieldIndex))
+        next = (tea.operand, path.push(.tupleField, index: tea.fieldIndex))
       case is InitEnumDataAddrInst, is UncheckedTakeEnumDataAddrInst:
         let ei = addr as! EnumInst
-        maybeNext = (ei.operand, path.push(.enumCase, index: ei.caseIndex))
+        next = (ei.operand, path.push(.enumCase, index: ei.caseIndex))
       // MARK: Address to Address Forwarding Instructions
       case is InitExistentialAddrInst, is OpenExistentialAddrInst, is BeginAccessInst,
            is PointerToAddressInst, is AddressToPointerInst, is IndexAddrInst:
-        maybeNext = ((addr as! Instruction).operands[0].value, path)
+        next = ((addr as! Instruction).operands[0].value, path)
       case let mdi as MarkDependenceInst:
-        maybeNext = (mdi.operands[0].value, path)
+        next = (mdi.operands[0].value, path)
       default:
-        maybeNext = nil
+        return visitDef(ofAddress: addr, path: p, kind: .terminalValue) == .abortWalk
       }
       
-      let nextStep = visitDef(ofAddress: addr, path: p,
-                              isRoot: maybeNext == nil ? .unmatchedInst : .canContinue)
+      let nextStep = visitDef(ofAddress: addr, path: p, kind: .interiorValue)
       
       switch nextStep {
       case .stopWalk:
@@ -492,18 +453,14 @@ extension UseDefWalker {
       case .abortWalk:
         return true
       case .continueWalk:
-        if let (nextAddr, nextPath) = maybeNext {
-          current = (nextAddr, nextPath)
-        } else {
-          return false
-        }
+        current = (next.addr, next.path)
       }
     }
   }
   
   private mutating
   func handleAnyValueFieldUp(value def: Value, path: SmallProjectionPath, operands: OperandArray) -> Bool {
-    let nextStep = visitDef(ofValue: def, path: path, isRoot: .canContinue)
+    let nextStep = visitDef(ofValue: def, path: path, kind: .interiorValue)
     switch nextStep {
     case .abortWalk:
       return true
