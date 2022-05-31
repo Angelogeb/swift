@@ -338,7 +338,7 @@ extension UseDefWalker {
         if let (index, newPath) = path.pop(kind: .structField) {
           next = (str.operands[index].value, newPath)
         } else if path.topMatchesAnyValueField {
-          return handleAnyValueFieldUp(value: value, path: path, operands: str.operands)
+          return walkAggregateInstUp(str, path: path)
         } else {
           return visitDef(ofValue: value, path: path, kind: .unmatchedPath) == .abortWalk
         }
@@ -346,7 +346,7 @@ extension UseDefWalker {
         if let (index, newPath) = path.pop(kind: .tupleField) {
           next = (t.operands[index].value, newPath)
         } else if path.topMatchesAnyValueField {
-          return handleAnyValueFieldUp(value: value, path: path, operands: t.operands)
+          return walkAggregateInstUp(t, path: path)
         } else {
           return visitDef(ofValue: value, path: path, kind: .unmatchedPath) == .abortWalk
         }
@@ -459,15 +459,15 @@ extension UseDefWalker {
   }
   
   private mutating
-  func handleAnyValueFieldUp(value def: Value, path: SmallProjectionPath, operands: OperandArray) -> Bool {
-    let nextStep = visitDef(ofValue: def, path: path, kind: .interiorValue)
+  func walkAggregateInstUp(_ inst: SingleValueInstruction, path: SmallProjectionPath) -> Bool {
+    let nextStep = visitDef(ofValue: inst, path: path, kind: .interiorValue)
     switch nextStep {
     case .abortWalk:
       return true
     case .stopWalk:
       return false
     case .continueWalk:
-      for op in operands {
+      for op in inst.operands {
         if let path = shouldRecomputeUp(value: op.value, path: path),
            walkUp(value: op.value, path: path) {
           return true
