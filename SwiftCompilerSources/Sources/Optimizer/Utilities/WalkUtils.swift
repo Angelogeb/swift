@@ -130,6 +130,13 @@ extension UseVisitor {
         resultState = visitAndWalkDown(value: operand, path: path,
                                        walkTo: (instruction as! SingleValueInstruction, path),
                                        next: .interiorValue, state: state)
+      case let mdi as MarkDependenceInst:
+        if operand.index == 0 {
+          resultState = visitAndWalkDown(value: operand, path: path, walkTo: (mdi, path),
+                                         next: .interiorValue, state: state)
+        } else {
+          resultState = visitUse(operand: operand, path: path, kind: .unmatchedPath, state: state)
+        }
         // MARK: Non-Address Branching Instructions
       case let br as BranchInst:
         let visitState = visitUse(operand: operand, path: path, kind: .interiorValue, state: state)
@@ -226,7 +233,7 @@ extension UseVisitor {
           resultState = visitAndWalkDown(address: use, path: path, walkTo: (mdi, path),
                                          next: .interiorValue, state: state)
         } else {
-          resultState = visitUse(operand: use, path: path, kind: .terminalValue /* conservative */, state: state)
+          resultState = visitUse(operand: use, path: path, kind: .unmatchedPath, state: state)
         }
       default:
         resultState = visitUse(operand: use, path: path, kind: .terminalValue, state: state)
