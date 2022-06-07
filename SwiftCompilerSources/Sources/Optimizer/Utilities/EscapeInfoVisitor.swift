@@ -122,6 +122,26 @@ struct EscapeInfoVisitor<V : VisitDefFunction & VisitUseFunction> : DefVisitor, 
         if let newPath = pop(.classField, index: pb.fieldIndex, from: path, yielding: pb) {
           return walkDown(address: pb, path: newPath, state: state.with(knownType: nil))
         }
+      case let se as SwitchEnumInst:
+        if let (caseIdx, path) = path.pop(kind: .enumCase) {
+          if let succBlock = se.getUniqueSuccessor(forCaseIndex: caseIdx) {
+            if let payload = succBlock.arguments.first {
+              return walkDown(value: payload, path: path, state: state)
+            }
+          }
+        } else if path.topMatchesAnyValueField {
+          // We don't know the enum case: we have to containue with _all_ cases.
+          for succBlock in se.block.successors {
+            if let payload = succBlock.arguments.first {
+              let state = walkDown(value: payload, path: path, state: state)
+              if state.result == .abortWalk {
+                return state
+              }
+            }
+          }
+        } else {
+          return state.with(result: .abortWalk)
+        }
         // MARK: destruction instructions
       case is StoreInst, is StoreWeakInst, is StoreUnownedInst:
         let store = instruction as! StoringInstruction
