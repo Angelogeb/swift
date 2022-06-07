@@ -183,7 +183,18 @@ struct EscapeInfoVisitor<V : VisitDefFunction & VisitUseFunction> : DefVisitor, 
       case is ApplyInst, is TryApplyInst, is BeginApplyInst:
         return walkDownCallee(argOp: operand, apply: instruction as! FullApplySite, path: path, state: state)
       case let pai as PartialApplyInst:
-        fatalError("TODO")
+        let calleeWalkState = walkDownCallee(argOp: operand, apply: pai, path: path, state: state.with(knownType: nil))
+        if calleeWalkState.result == .abortWalk {
+          return calleeWalkState
+        }
+        // We need to follow the partial_apply value for two reasons:
+        // 1. the closure (with the captured values) itself can escape
+        // 2. something can escape in a destructor when the context is destroyed
+        if pai.type.isAddress {
+          return walkDown(address: pai, path: path, state: state.with(knownType: nil))
+        } else {
+          return walkDown(value: pai, path: path, state: state.with(knownType: nil))
+        }
       case is LoadInst, is LoadWeakInst, is LoadUnownedInst:
         if canIgnoreForLoadOrArgument(path) { return state.with(result: .stopWalk) }
         let svi = instruction as! SingleValueInstruction
