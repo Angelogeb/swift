@@ -31,6 +31,7 @@ let escapeInfoDumper = FunctionPass(name: "dump-escape-info", {
       
         let escapes = escapeInfo.isEscaping(object: allocRef,
           visitUse: { op, path, _ in
+            print("visitUse \"\(path)\": #\(op.index) \(op.instruction)")
             if op.instruction is ReturnInst {
               results.insert("return[\(path)]")
               return .ignore
@@ -38,6 +39,7 @@ let escapeInfoDumper = FunctionPass(name: "dump-escape-info", {
             return .continueWalking
           },
           visitDef: { def, path, followStores in
+            print("visitDef \"\(path)\": \(def)")
             guard let arg = def as? FunctionArgument else {
               return .continueWalkingUp
             }

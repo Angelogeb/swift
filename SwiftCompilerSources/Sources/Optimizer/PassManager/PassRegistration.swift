@@ -41,6 +41,7 @@ private func registerSwiftPasses() {
   registerPass(silPrinterPass, { silPrinterPass.run($0) })
   registerPass(mergeCondFailsPass, { mergeCondFailsPass.run($0) })
   registerPass(escapeInfoDumper, { escapeInfoDumper.run($0) })
+  registerPass(escapeInfoDumper2, { escapeInfoDumper2.run($0) })
   registerPass(addressEscapeInfoDumper, { addressEscapeInfoDumper.run($0) })
   registerPass(computeEffects, { computeEffects.run($0) })
   registerPass(objCBridgingOptimization, { objCBridgingOptimization.run($0) })
