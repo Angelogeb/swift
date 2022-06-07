@@ -17,7 +17,7 @@ let escapeInfoDumper2 = FunctionPass(name: "dump-escape-info2", {
   
   print("Escape information for \(function.name):")
   
-  struct VisitFuns : VisitDefFunction, VisitUseFunction {
+  struct VisitFuns : VisitFunctions {
     typealias State = EscapeInfoState
     var results: Set<String> = Set()
     

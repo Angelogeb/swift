@@ -30,19 +30,16 @@ struct EscapeInfoState : HasResult {
   }
 }
 
-protocol VisitUseFunction : HasState {
+protocol VisitFunctions : HasState {
   mutating
   func visitUse(operand: Operand, path: SmallProjectionPath, state: State) -> State
-}
-
-protocol VisitDefFunction : HasState {
+  
   mutating
   func visitDef(def: Value, path: SmallProjectionPath, state: State) -> State
 }
 
 
-
-struct EscapeInfoVisitor<V : VisitDefFunction & VisitUseFunction> : DefVisitor, UseVisitor
+struct EscapeInfoVisitor<V : VisitFunctions> : DefVisitor, UseVisitor
   where V.State == EscapeInfoState {
   
   typealias State = EscapeInfoState
