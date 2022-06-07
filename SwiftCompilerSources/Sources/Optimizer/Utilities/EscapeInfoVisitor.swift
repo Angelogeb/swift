@@ -517,7 +517,7 @@ struct EscapeInfoVisitor<V : VisitDefFunction & VisitUseFunction> : DefVisitor, 
 
         matched = true
         
-        let arg = apply.arguments[calleeArgIdx]
+        let arg = apply.arguments[callerArgIdx]
         let walkState: State
         if arg.type.isAddress {
           walkState = walkUp(address: arg, path: effect.selectedArg.pathPattern, state: state.with(followStores: false).with(knownType: nil))
