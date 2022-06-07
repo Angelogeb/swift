@@ -27,23 +27,23 @@ let escapeInfoDumper2 = FunctionPass(name: "dump-escape-info2", {
     }
     
     mutating
-    func visitUse(operand: Operand, path: SmallProjectionPath, state: EscapeInfoState) -> EscapeInfoState {
+    func visitUse(operand: Operand, path: SmallProjectionPath, state: EscapeInfoState) -> VisitResult {
       print("visitUse \"\(path)\": #\(operand.index) \(operand.instruction)")
       if operand.instruction is ReturnInst {
         results.insert("return[\(path)]")
-        return state.with(result: .stopWalk)
+        return (state, .stopWalk)
       }
-      return state.with(result: .continueWalk)
+      return (state, .continueWalk)
     }
     
     mutating
-    func visitDef(def: Value, path: SmallProjectionPath, state: EscapeInfoState) -> EscapeInfoState {
+    func visitDef(def: Value, path: SmallProjectionPath, state: EscapeInfoState) -> VisitResult {
       print("visitDef \"\(path)\": \(def)")
       guard let arg = def as? FunctionArgument else {
-        return state.with(result: .continueWalk)
+        return (state, .continueWalk)
       }
       results.insert("arg\(arg.index)[\(path)]")
-      return state.with(result: .continueWalk).with(walkDown: true)
+      return (state.with(walkDown: true), .continueWalk)
     }
   }
   

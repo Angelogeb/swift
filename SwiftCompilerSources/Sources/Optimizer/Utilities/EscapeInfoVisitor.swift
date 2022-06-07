@@ -1,41 +1,43 @@
 import SIL
 
-struct EscapeInfoState : HasResult {
-  let result: WalkResult
+struct EscapeInfoState {
   let followStores: Bool
   let knownType: Type?
   let walkDown: Bool
   
-  init(result: WalkResult, followStores: Bool, knownType: Type?, walkDown: Bool = false) {
-    self.result = result
+  init(followStores: Bool, knownType: Type?, walkDown: Bool = false) {
     self.followStores = followStores
     self.knownType = knownType
     self.walkDown = walkDown
   }
   
   func with(result: WalkResult) -> EscapeInfoState {
-    return EscapeInfoState(result: result, followStores: followStores, knownType: knownType)
+    return EscapeInfoState(followStores: followStores, knownType: knownType)
   }
   
   func with(knownType: Type?) -> EscapeInfoState {
-    return EscapeInfoState(result: result, followStores: followStores, knownType: knownType)
+    return EscapeInfoState(followStores: followStores, knownType: knownType)
   }
   
   func with(followStores: Bool) -> EscapeInfoState {
-    return EscapeInfoState(result: result, followStores: followStores, knownType: knownType)
+    return EscapeInfoState(followStores: followStores, knownType: knownType)
   }
   
   func with(walkDown: Bool) -> EscapeInfoState {
-    return EscapeInfoState(result: result, followStores: followStores, knownType: knownType, walkDown: walkDown)
+    return EscapeInfoState(followStores: followStores, knownType: knownType, walkDown: walkDown)
   }
 }
 
-protocol VisitFunctions : HasState {
-  mutating
-  func visitUse(operand: Operand, path: SmallProjectionPath, state: State) -> State
+protocol VisitFunctions {
+  associatedtype State
+  
+  typealias VisitResult = (state: State, next: WalkResult)
   
   mutating
-  func visitDef(def: Value, path: SmallProjectionPath, state: State) -> State
+  func visitUse(operand: Operand, path: SmallProjectionPath, state: State) -> VisitResult
+  
+  mutating
+  func visitDef(def: Value, path: SmallProjectionPath, state: State) -> VisitResult
 }
 
 
@@ -69,12 +71,12 @@ struct EscapeInfoVisitor<V : VisitFunctions> : DefVisitor, UseVisitor
     start(forAnalyzingAddresses: false)
     defer { cleanup() }
     
-    let state = State(result: .continueWalk, followStores: false, knownType: nil)
+    let state = State(followStores: false, knownType: nil)
     if let (path, state) = shouldRecomputeUp(def: object, path: path, state: state) {
       if object.type.isAddress {
-        return walkUp(address: object, path: path, state: state).result == .abortWalk
+        return walkUp(address: object, path: path, state: state).next == .abortWalk
       } else {
-        return walkUp(value: object, path: path, state: state).result == .abortWalk
+        return walkUp(value: object, path: path, state: state).next == .abortWalk
       }
     }
     return false
@@ -83,7 +85,7 @@ struct EscapeInfoVisitor<V : VisitFunctions> : DefVisitor, UseVisitor
   mutating
   func shouldRecomputeDown(def: Value, path: SmallProjectionPath, state: State) -> (SmallProjectionPath, State)? {
     if let entry = walkedDownCache[def.hashable, default: CacheEntry()].needWalk(path: path, followStores: state.followStores, knownType: state.knownType) {
-      return (entry.path, State(result: state.result, followStores: entry.followStores, knownType: entry.knownType))
+      return (entry.path, State(followStores: entry.followStores, knownType: entry.knownType))
     }
     return nil
   }
@@ -91,19 +93,20 @@ struct EscapeInfoVisitor<V : VisitFunctions> : DefVisitor, UseVisitor
   mutating
   func shouldRecomputeUp(def: Value, path: SmallProjectionPath, state: State) -> (SmallProjectionPath, State)? {
     if let entry = walkedUpCache[def.hashable, default: CacheEntry()].needWalk(path: path, followStores: state.followStores, knownType: state.knownType) {
-      return (entry.path, State(result: state.result, followStores: entry.followStores, knownType: entry.knownType))
+      return (entry.path, State(followStores: entry.followStores, knownType: entry.knownType))
     }
     return nil
   }
   
   mutating
-  func visitUse(operand: Operand, path: SmallProjectionPath, kind: WalkerVisitKind, state: State) -> State {
+  func visitUse(operand: Operand, path: SmallProjectionPath, kind: WalkerVisitKind, state: State) -> VisitResult {
     // The visitFunctions don't need to know the `kind` of visit so we can
     // first perform the visit and then continue if necessary. This simplifies the
     // logic a bit.
-    let state = visitFunctions.visitUse(operand: operand, path: path, state: state)
+    let visitResult = visitFunctions.visitUse(operand: operand, path: path, state: state)
+    let state = visitResult.state
     
-    if kind == .terminalValue && state.result == .continueWalk {
+    if kind == .terminalValue && visitResult.next == .continueWalk {
       let instruction = operand.instruction
       switch instruction {
         // MARK: (operand: non-address) -> (result: address) mode change
@@ -130,14 +133,14 @@ struct EscapeInfoVisitor<V : VisitFunctions> : DefVisitor, UseVisitor
           // We don't know the enum case: we have to containue with _all_ cases.
           for succBlock in se.block.successors {
             if let payload = succBlock.arguments.first {
-              let state = walkDown(value: payload, path: path, state: state)
-              if state.result == .abortWalk {
-                return state
+              let walkResult = walkDown(value: payload, path: path, state: state)
+              if walkResult.next == .abortWalk {
+                return walkResult
               }
             }
           }
         } else {
-          return state.with(result: .abortWalk)
+          return (state, .abortWalk)
         }
         // MARK: destruction instructions
       case is StoreInst, is StoreWeakInst, is StoreUnownedInst:
@@ -148,7 +151,7 @@ struct EscapeInfoVisitor<V : VisitFunctions> : DefVisitor, UseVisitor
           assert(operand == store.destinationOperand)
           if let si = store as? StoreInst, si.destinationOwnership == .assign {
             if handleDestroy(of: operand.value, path: path, followStores: state.followStores, knownType: nil) {
-              return state.with(result: .abortWalk)
+              return (state, .abortWalk)
             }
           }
           if state.followStores {
@@ -156,13 +159,13 @@ struct EscapeInfoVisitor<V : VisitFunctions> : DefVisitor, UseVisitor
           }
         }
       case let copyAddr as CopyAddrInst:
-        if canIgnoreForLoadOrArgument(path) { return state.with(result: .stopWalk) }
+        if canIgnoreForLoadOrArgument(path) { return (state, .stopWalk) }
         if operand == copyAddr.sourceOperand {
           return walkUp(address: copyAddr.destination, path: path, state: state)
         } else {
           if !copyAddr.isInitializationOfDest {
             if handleDestroy(of: operand.value, path: path, followStores: state.followStores, knownType: nil) {
-              return state.with(result: .abortWalk)
+              return (state, .abortWalk)
             }
           }
           
@@ -173,16 +176,16 @@ struct EscapeInfoVisitor<V : VisitFunctions> : DefVisitor, UseVisitor
         }
       case is DestroyValueInst, is ReleaseValueInst, is StrongReleaseInst, is DestroyAddrInst:
         if handleDestroy(of: operand.value, path: path, followStores: state.followStores, knownType: state.knownType) {
-          return state.with(result: .abortWalk)
+          return (state, .abortWalk)
         }
       case is ReturnInst:
-        return state.with(result: .abortWalk)
+        return (state, .abortWalk)
       case is ApplyInst, is TryApplyInst, is BeginApplyInst:
         return walkDownCallee(argOp: operand, apply: instruction as! FullApplySite, path: path, state: state)
       case let pai as PartialApplyInst:
-        let calleeWalkState = walkDownCallee(argOp: operand, apply: pai, path: path, state: state.with(knownType: nil))
-        if calleeWalkState.result == .abortWalk {
-          return calleeWalkState
+        let walkResult = walkDownCallee(argOp: operand, apply: pai, path: path, state: state.with(knownType: nil))
+        if walkResult.next == .abortWalk {
+          return walkResult
         }
         // We need to follow the partial_apply value for two reasons:
         // 1. the closure (with the captured values) itself can escape
@@ -193,11 +196,11 @@ struct EscapeInfoVisitor<V : VisitFunctions> : DefVisitor, UseVisitor
           return walkDown(value: pai, path: path, state: state.with(knownType: nil))
         }
       case is LoadInst, is LoadWeakInst, is LoadUnownedInst:
-        if canIgnoreForLoadOrArgument(path) { return state.with(result: .stopWalk) }
+        if canIgnoreForLoadOrArgument(path) { return (state, .stopWalk) }
         let svi = instruction as! SingleValueInstruction
         
         // Even when analyzing addresses, a loaded trivial value can be ignored.
-        if !svi.type.isNonTrivialOrContainsRawPointer(in: svi.function) { return state.with(result: .stopWalk) }
+        if !svi.type.isNonTrivialOrContainsRawPointer(in: svi.function) { return (state, .stopWalk) }
         
         return walkDown(value: svi, path: path, state: state.with(knownType: nil))
       case let atp as AddressToPointerInst:
@@ -210,10 +213,10 @@ struct EscapeInfoVisitor<V : VisitFunctions> : DefVisitor, UseVisitor
         case .DestroyArray:
           if operand.index != 1 ||
               path.popAllValueFields().popIfMatches(.anyClassField) != nil {
-            return state.with(result: .abortWalk)
+            return (state, .abortWalk)
           }
         default:
-          return state.with(result: .abortWalk)
+          return (state, .abortWalk)
         }
       case is DeallocStackInst, is StrongRetainInst, is RetainValueInst,
         is DebugValueInst, is ValueMetatypeInst, is InjectEnumAddrInst,
@@ -224,21 +227,24 @@ struct EscapeInfoVisitor<V : VisitFunctions> : DefVisitor, UseVisitor
         is StrongRetainInst, is RetainValueInst,
         is ClassMethodInst, is SuperMethodInst, is ObjCMethodInst,
         is ObjCSuperMethodInst, is WitnessMethodInst,is DeallocStackRefInst:
-        return state.with(result: .stopWalk)
+        return (state, .stopWalk)
       default:
-        return state.with(result: .abortWalk)
+        return (state, .abortWalk)
       }
     }
-    return state
+    return visitResult
   }
   
   mutating
-  func visitDef(object: Value, path: SmallProjectionPath, kind: WalkerVisitKind, state: State) -> State {
+  func visitDef(object: Value, path: SmallProjectionPath, kind: WalkerVisitKind, state: State) -> VisitResult {
     // The visitFunctions don't need to know the `kind` of visit so we can
     // first perform the visit and then continue if necessary. This simplifies the
     // logic a bit.
-    let state = visitFunctions.visitDef(def: object, path: path, state: state)
+    let visitResult = visitFunctions.visitDef(def: object, path: path, state: state)
+    let state = visitResult.state
+    
     if state.walkDown {
+      assert(visitResult.next == .continueWalk)
       if let (path, state) = shouldRecomputeDown(def: object, path: path, state: state.with(walkDown: false).with(knownType: nil)) {
         if object.type.isAddress {
           return walkDown(address: object, path: path, state: state)
@@ -246,10 +252,10 @@ struct EscapeInfoVisitor<V : VisitFunctions> : DefVisitor, UseVisitor
           return walkDown(value: object, path: path, state: state)
         }
       }
-      return state
+      return visitResult
     }
     
-    if kind == .terminalValue && state.result == .continueWalk {
+    if kind == .terminalValue && visitResult.next == .continueWalk {
       switch object {
       case is AllocRefInst, is AllocRefDynamicInst:
         if let (path, state) = shouldRecomputeDown(def: object, path: path, state: state.with(knownType: object.type)) {
@@ -266,21 +272,21 @@ struct EscapeInfoVisitor<V : VisitFunctions> : DefVisitor, UseVisitor
             return walkDown(address: object, path: path, state: state)
           }
         } else {
-          return state.with(result: .abortWalk)
+          return (state, .abortWalk)
         }
       case let arg as BlockArgument:
         let block = arg.block
         switch block.singlePredecessor!.terminator {
         case let se as SwitchEnumInst:
           guard let caseIdx = se.getUniqueCase(forSuccessor: block) else {
-            return state.with(result: .abortWalk)
+            return (state, .abortWalk)
           }
           return walkUp(value: se.enumOp, path: path.push(.enumCase, index: caseIdx), state: state)
         case let ta as TryApplyInst:
-        if block != ta.normalBlock { return state.with(result: .abortWalk) }
+          if block != ta.normalBlock { return (state, .abortWalk) }
           return walkUpApplyResult(apply: ta, path: path, state: state)
         default:
-          return state.with(result: .abortWalk)
+          return (state, .abortWalk)
         }
       case let ap as ApplyInst:
         return walkUpApplyResult(apply: ap, path: path, state: state)
@@ -300,11 +306,11 @@ struct EscapeInfoVisitor<V : VisitFunctions> : DefVisitor, UseVisitor
         return walkUp(value: pb.operand, path: path.push(.classField, index: pb.fieldIndex), state: state)
       default:
         // MARK: can't recognize origin of value
-        return state.with(result: .abortWalk)
+        return (state, .abortWalk)
       }
     }
     
-    return state
+    return visitResult
   }
   
   
@@ -472,13 +478,13 @@ struct EscapeInfoVisitor<V : VisitFunctions> : DefVisitor, UseVisitor
   /// Handle an apply (full or partial) during the walk-down.
   private mutating
   func walkDownCallee(argOp: Operand, apply: ApplySite,
-                      path: SmallProjectionPath, state: State) -> State {
+                      path: SmallProjectionPath, state: State) -> VisitResult {
     guard let argIdx = apply.argumentIndex(of: argOp) else {
       // The callee or a type dependent operand of the apply does not let escape anything.
-      return state
+      return (state, .stopWalk)
     }
 
-    if canIgnoreForLoadOrArgument(path) { return state }
+    if canIgnoreForLoadOrArgument(path) { return (state, .stopWalk) }
 
     // Argument effects do not consider any potential stores to the argument (or it's content).
     // Therefore, if we need to track stores, the argument effects do not correctly describe what we need.
@@ -489,11 +495,11 @@ struct EscapeInfoVisitor<V : VisitFunctions> : DefVisitor, UseVisitor
     //   bb0(%0 : $*X, %1 : $X):
     //     store %1 to %0 : $*X
     //   }
-    if state.followStores { return state.with(result: .abortWalk) }
+    if state.followStores { return (state, .abortWalk) }
 
     guard let callees = calleeAnalysis.getCallees(callee: apply.callee) else {
       // The callees are not know, e.g. if the callee is a closure, class method, etc.
-      return state.with(result: .abortWalk)
+      return (state, .abortWalk)
     }
 
     let calleeArgIdx = apply.calleeArgIndex(callerArgIndex: argIdx)
@@ -503,19 +509,19 @@ struct EscapeInfoVisitor<V : VisitFunctions> : DefVisitor, UseVisitor
       if !effects.canEscape(argumentIndex: calleeArgIdx, path: path, analyzeAddresses: analyzeAddresses) {
         continue
       }
-      let walkState = walkDownArgument(calleeArgIdx: calleeArgIdx, argPath: path, state: state,
+      let walkResult = walkDownArgument(calleeArgIdx: calleeArgIdx, argPath: path, state: state,
                           apply: apply, effects: effects)
-      if walkState.result == .abortWalk {
-        return walkState
+      if walkResult.next == .abortWalk {
+        return walkResult
       }
     }
-    return state
+    return (state, .stopWalk)
   }
 
   /// Handle `.escaping` effects for an apply argument during the walk-down.
   private mutating
   func walkDownArgument(calleeArgIdx: Int, argPath: SmallProjectionPath, state: State,
-                        apply: ApplySite, effects: FunctionEffects) -> State {
+                        apply: ApplySite, effects: FunctionEffects) -> VisitResult {
     var matched = false
     for effect in effects.argumentEffects {
       guard case .escaping(let to, let exclusive) = effect.kind else {
@@ -526,35 +532,35 @@ struct EscapeInfoVisitor<V : VisitFunctions> : DefVisitor, UseVisitor
 
         switch to.value {
         case .returnValue:
-          guard let fas = apply as? FullApplySite, let result = fas.singleDirectResult else { return state.with(result: .abortWalk) }
+          guard let fas = apply as? FullApplySite, let result = fas.singleDirectResult else { return (state, .abortWalk) }
 
           let state = exclusive ? state.with(followStores: false) : state.with(followStores: false).with(knownType: nil)
-          let walkState: State
+          let walkResult: VisitResult
           if result.type.isAddress {
-            walkState = walkDown(address: result, path: to.pathPattern, state: state)
+            walkResult = walkDown(address: result, path: to.pathPattern, state: state)
           } else {
-            walkState = walkDown(value: result, path: to.pathPattern, state: state)
+            walkResult = walkDown(value: result, path: to.pathPattern, state: state)
           }
           
-          if walkState.result == .abortWalk {
-            return walkState
+          if walkResult.next == .abortWalk {
+            return walkResult
           }
         case .argument(let toArgIdx):
           guard let callerToIdx = apply.callerArgIndex(calleeArgIndex: toArgIdx) else {
-            return state.with(result: .abortWalk)
+            return (state, .abortWalk)
           }
 
           // Continue at the destination of an arg-to-arg escape.
           let arg = apply.arguments[callerToIdx]
-          let walkState: State
+          let walkResult: VisitResult
           
           if arg.type.isAddress {
-            walkState = walkUp(address: arg, path: to.pathPattern, state: state.with(followStores: false).with(knownType: nil))
+            walkResult = walkUp(address: arg, path: to.pathPattern, state: state.with(followStores: false).with(knownType: nil))
           } else {
-            walkState = walkUp(value: arg, path: to.pathPattern, state: state.with(followStores: false).with(knownType: nil))
+            walkResult = walkUp(value: arg, path: to.pathPattern, state: state.with(followStores: false).with(knownType: nil))
           }
-          if walkState.result == .abortWalk {
-            return walkState
+          if walkResult.next == .abortWalk {
+            return walkResult
           }
         }
         continue
@@ -562,37 +568,37 @@ struct EscapeInfoVisitor<V : VisitFunctions> : DefVisitor, UseVisitor
       // Handle the reverse direction of an arg-to-arg escape.
       if to.matches(.argument(calleeArgIdx), argPath) {
         guard let callerArgIdx = apply.callerArgIndex(calleeArgIndex: effect.selectedArg.argumentIndex) else {
-          return state.with(result: .abortWalk)
+          return (state, .abortWalk)
         }
-        if !exclusive { return state.with(result: .abortWalk) }
+        if !exclusive { return (state, .abortWalk) }
 
         matched = true
         
         let arg = apply.arguments[callerArgIdx]
-        let walkState: State
+        let walkResult: VisitResult
         if arg.type.isAddress {
-          walkState = walkUp(address: arg, path: effect.selectedArg.pathPattern, state: state.with(followStores: false).with(knownType: nil))
+          walkResult = walkUp(address: arg, path: effect.selectedArg.pathPattern, state: state.with(followStores: false).with(knownType: nil))
         } else {
-          walkState = walkUp(value: arg, path: effect.selectedArg.pathPattern, state: state.with(followStores: false).with(knownType: nil))
+          walkResult = walkUp(value: arg, path: effect.selectedArg.pathPattern, state: state.with(followStores: false).with(knownType: nil))
         }
         
-        if walkState.result == .abortWalk {
-          return walkState
+        if walkResult.next == .abortWalk {
+          return walkResult
         }
         continue
       }
     }
-    if !matched { return state.with(result: .abortWalk) }
-    return state.with(result: .stopWalk)
+    if !matched { return (state, .abortWalk) }
+    return (state, .stopWalk)
   }
   
   /// Walks up from the return to the source argument if there is an "exclusive"
   /// escaping effect on an argument.
   private mutating
   func walkUpApplyResult(apply: FullApplySite,
-                         path: SmallProjectionPath, state: State) -> State {
+                         path: SmallProjectionPath, state: State) -> VisitResult {
     guard let callees = calleeAnalysis.getCallees(callee: apply.callee) else {
-      return state.with(result: .abortWalk)
+      return (state, .abortWalk)
     }
 
     for callee in callees {
@@ -606,22 +612,22 @@ struct EscapeInfoVisitor<V : VisitFunctions> : DefVisitor, UseVisitor
             matched = true
             let arg = apply.arguments[effect.selectedArg.argumentIndex]
             
-            let walkState: State
+            let walkResult: VisitResult
             if arg.type.isAddress {
-              walkState = walkUp(address: arg, path: effect.selectedArg.pathPattern, state: state.with(knownType: nil))
+              walkResult = walkUp(address: arg, path: effect.selectedArg.pathPattern, state: state.with(knownType: nil))
             } else {
-              walkState = walkUp(value: arg, path: effect.selectedArg.pathPattern, state: state.with(knownType: nil))
+              walkResult = walkUp(value: arg, path: effect.selectedArg.pathPattern, state: state.with(knownType: nil))
             }
-            if walkState.result == .abortWalk {
-              return walkState
+            if walkResult.next == .abortWalk {
+              return walkResult
             }
           }
         }
       }
       if !matched {
-        return state.with(result: .abortWalk)
+        return (state, .abortWalk)
       }
     }
-    return state.with(result: .stopWalk)
+    return (state, .stopWalk)
   }
 }
