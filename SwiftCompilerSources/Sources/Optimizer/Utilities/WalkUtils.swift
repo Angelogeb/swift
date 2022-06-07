@@ -216,8 +216,8 @@ extension UseVisitor {
           resultState = visitUse(operand: use, path: path, kind: .unmatchedPath, state: state)
         }
       case is InitEnumDataAddrInst, is UncheckedTakeEnumDataAddrInst:
-        let ei = instruction as! EnumInst
-        if let newPath = path.popIfMatches(.enumCase, index: ei.caseIndex) {
+        let ei = instruction as! SingleValueInstruction
+        if let newPath = path.popIfMatches(.enumCase, index: (instruction as! EnumInstruction).caseIndex) {
           resultState = visitAndWalkDown(address: use, path: path, walkTo: (ei, newPath),
                                          next: .interiorValue, state: state)
         } else {
@@ -406,8 +406,7 @@ extension DefVisitor {
       case let tea as TupleElementAddrInst:
         next = (tea.operand, path.push(.tupleField, index: tea.fieldIndex))
       case is InitEnumDataAddrInst, is UncheckedTakeEnumDataAddrInst:
-        let ei = def as! EnumInst
-        next = (ei.operand, path.push(.enumCase, index: ei.caseIndex))
+        next = ((def as! UnaryInstruction).operand, path.push(.enumCase, index: (def as! EnumInstruction).caseIndex))
         // MARK: Address to Address Forwarding Instructions
       case is InitExistentialAddrInst, is OpenExistentialAddrInst, is BeginAccessInst,
         is PointerToAddressInst, is AddressToPointerInst, is IndexAddrInst:
