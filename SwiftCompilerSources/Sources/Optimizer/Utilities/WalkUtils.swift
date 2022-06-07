@@ -225,7 +225,7 @@ extension UseVisitor {
         }
         // MARK: Address to Address Forwarding Instructions
       case is InitExistentialAddrInst, is OpenExistentialAddrInst, is BeginAccessInst,
-        is PointerToAddressInst, is AddressToPointerInst, is IndexAddrInst:
+        is IndexAddrInst:
         resultState = visitAndWalkDown(address: use, path: path, walkTo: (instruction as! SingleValueInstruction, path),
                                        next: .interiorValue, state: state)
       case let mdi as MarkDependenceInst:
@@ -408,8 +408,7 @@ extension DefVisitor {
       case is InitEnumDataAddrInst, is UncheckedTakeEnumDataAddrInst:
         next = ((def as! UnaryInstruction).operand, path.push(.enumCase, index: (def as! EnumInstruction).caseIndex))
         // MARK: Address to Address Forwarding Instructions
-      case is InitExistentialAddrInst, is OpenExistentialAddrInst, is BeginAccessInst,
-        is PointerToAddressInst, is AddressToPointerInst, is IndexAddrInst:
+      case is InitExistentialAddrInst, is OpenExistentialAddrInst, is BeginAccessInst, is IndexAddrInst:
         next = ((def as! Instruction).operands[0].value, path)
       case let mdi as MarkDependenceInst:
         next = (mdi.operands[0].value, path)
