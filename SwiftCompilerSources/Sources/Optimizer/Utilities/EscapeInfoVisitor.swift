@@ -261,7 +261,19 @@ struct EscapeInfoVisitor<V : VisitDefFunction & VisitUseFunction> : DefVisitor, 
           return state.with(result: .abortWalk)
         }
       case let arg as BlockArgument:
-        fatalError("TODO")
+        let block = arg.block
+        switch block.singlePredecessor!.terminator {
+        case let se as SwitchEnumInst:
+          guard let caseIdx = se.getUniqueCase(forSuccessor: block) else {
+            return state.with(result: .abortWalk)
+          }
+          return walkUp(value: se.enumOp, path: path.push(.enumCase, index: caseIdx), state: state)
+        case let ta as TryApplyInst:
+        if block != ta.normalBlock { return state.with(result: .abortWalk) }
+          return walkUpApplyResult(apply: ta, path: path, state: state)
+        default:
+          return state.with(result: .abortWalk)
+        }
       case let ap as ApplyInst:
         return walkUpApplyResult(apply: ap, path: path, state: state)
         // MARK: non-address to address mode change
