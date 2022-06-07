@@ -172,6 +172,11 @@ struct EscapeInfoVisitor<V : VisitDefFunction & VisitUseFunction> : DefVisitor, 
         if !svi.type.isNonTrivialOrContainsRawPointer(in: svi.function) { return state.with(result: .stopWalk) }
         
         return walkDown(value: svi, path: path, state: state.with(knownType: nil))
+      case let atp as AddressToPointerInst:
+        return walkDown(value: atp, path: path, state: state.with(knownType: nil))
+      case is PointerToAddressInst, is IndexAddrInst:
+        assert(operand.index == 0)
+        return walkDown(address: instruction as! SingleValueInstruction, path: path, state: state.with(knownType: nil))
       case let bi as BuiltinInst:
         switch bi.id {
         case .DestroyArray:
@@ -239,8 +244,14 @@ struct EscapeInfoVisitor<V : VisitDefFunction & VisitUseFunction> : DefVisitor, 
         fatalError("TODO")
       case let ap as ApplyInst:
         return walkUpApplyResult(apply: ap, path: path, state: state)
+        // MARK: non-address to address mode change
       case is LoadInst, is LoadWeakInst, is LoadUnownedInst:
         return walkUp(address: (object as! UnaryInstruction).operand, path: path, state: state.with(followStores: true))
+      case let atp as AddressToPointerInst:
+        return walkUp(address: atp.operand, path: path, state: state)
+        // MARK: address to non-address mode change
+      case is PointerToAddressInst, is IndexAddrInst:
+        return walkUp(value: (object as! SingleValueInstruction).operands[0].value, path: path, state: state.with(knownType: nil))
       case let rta as RefTailAddrInst:
         return walkUp(value: rta.operand, path: path.push(.tailElements), state: state)
       case let rea as RefElementAddrInst:
