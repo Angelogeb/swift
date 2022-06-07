@@ -206,7 +206,7 @@ struct EscapeInfoVisitor<V : VisitDefFunction & VisitUseFunction> : DefVisitor, 
     // logic a bit.
     let state = visitFunctions.visitDef(def: object, path: path, state: state)
     if state.walkDown {
-      if let (path, state) = shouldRecomputeDown(def: object, path: path, state: state.with(walkDown: false)) {
+      if let (path, state) = shouldRecomputeDown(def: object, path: path, state: state.with(walkDown: false).with(knownType: nil)) {
         if object.type.isAddress {
           return walkDown(address: object, path: path, state: state)
         } else {
@@ -219,7 +219,7 @@ struct EscapeInfoVisitor<V : VisitDefFunction & VisitUseFunction> : DefVisitor, 
     if kind == .terminalValue && state.result == .continueWalk {
       switch object {
       case is AllocRefInst, is AllocRefDynamicInst:
-        if let (path, state) = shouldRecomputeDown(def: object, path: path, state: state) {
+        if let (path, state) = shouldRecomputeDown(def: object, path: path, state: state.with(knownType: object.type)) {
           return walkDown(value: object, path: path, state: state)
         }
       case is AllocStackInst, is AllocBoxInst:
