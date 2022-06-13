@@ -12,435 +12,325 @@
 
 import SIL
 
-enum WalkResult {
-  /// stop walking further for the current use/definition
-  case stopWalk
-  /// abort the walk for all uses/definitions
-  case abortWalk
-  /// continue the walk
-  case continueWalk
-}
 
-enum WalkerVisitKind {
-  case interiorValue
-  case terminalValue
-  case unmatchedPath
-}
-
-protocol UseVisitor {
+protocol MemoizedDefUse {
+  typealias Path = SmallProjectionPath
   associatedtype State
   
-  typealias VisitResult = (state: State, next: WalkResult)
-  
-  mutating
-  func visitUse(operand: Operand, path: SmallProjectionPath, kind: WalkerVisitKind, state: State) -> VisitResult
-  
-  mutating
-  func shouldRecomputeDown(def: Value, path: SmallProjectionPath, state: State) -> (SmallProjectionPath, State)?
+  mutating func shouldRecomputeDown(def: Value, path: Path, state: State) -> (Path, State)?
 }
 
-protocol DefVisitor {
+protocol MemoizedUseDef {
+  typealias Path = SmallProjectionPath
   associatedtype State
   
-  typealias VisitResult = (state: State, next: WalkResult)
+  mutating func shouldRecomputeUp(def: Value, path: Path, state: State) -> (Path, State)?
+}
+
+protocol ValueDefUseWalker : MemoizedDefUse {
+  mutating func walkDown(value: Operand, path: Path, state: State) -> Bool
   
-  mutating
-  func visitDef(object: Value, path: SmallProjectionPath, kind: WalkerVisitKind, state: State) -> VisitResult
+  mutating func leafUse(value: Operand, path: Path, state: State) -> Bool
   
-  mutating
-  func shouldRecomputeUp(def: Value, path: SmallProjectionPath, state: State) -> (SmallProjectionPath, State)?
+  mutating func unmatchedPath(value: Operand, path: Path, state: State) -> Bool
 }
 
 
-extension UseVisitor {
-  mutating
-  func walkDown(value def: Value, path: SmallProjectionPath, state: State) -> VisitResult {
-    for operand in def.uses {
-      if operand.isTypeDependent { continue }
-      
-      let result: VisitResult
-      
-      let instruction = operand.instruction
-      switch instruction {
-        // MARK: (trivially Non-Address to Non-Address) Constructions
-      case let str as StructInst:
-        result = visitAndWalkDown(value: operand, path: path,
-                                       walkTo: (str, path.push(.structField, index: operand.index)),
-                                       next: .interiorValue, state: state)
-      case let t as TupleInst:
-        result = visitAndWalkDown(value: operand, path: path,
-                                       walkTo: (t, path.push(.tupleField, index: operand.index)),
-                                       next: .interiorValue, state: state)
-      case let e as EnumInst:
-        result = visitAndWalkDown(value: operand, path: path,
-                                       walkTo: (e, path.push(.enumCase, index: e.caseIndex)),
-                                       next: .interiorValue, state: state)
-        // MARK: Non-Address to Non-Address Projections
-      case let se as StructExtractInst:
-        if let newPath = path.popIfMatches(.structField, index: se.fieldIndex) {
-          result = visitAndWalkDown(value: operand, path: path,
-                                         walkTo: (se, newPath),
-                                         next: .interiorValue, state: state)
-        } else {
-          result = visitUse(operand: operand, path: path, kind: .unmatchedPath, state: state)
-        }
-      case let te as TupleExtractInst:
-        if let newPath = path.popIfMatches(.tupleField, index: te.fieldIndex) {
-          result = visitAndWalkDown(value: operand, path: path,
-                                         walkTo: (te, newPath), next: .interiorValue, state: state)
-        } else {
-          result = visitUse(operand: operand, path: path, kind: .unmatchedPath, state: state)
-        }
-      case let ued as UncheckedEnumDataInst:
-        if let newPath = path.popIfMatches(.enumCase, index: ued.caseIndex) {
-          result = visitAndWalkDown(value: operand, path: path,
-                                         walkTo: (ued, newPath), next: .interiorValue, state: state)
-        } else {
-          result = visitUse(operand: operand, path: path, kind: .unmatchedPath, state: state)
-        }
-        // MARK: (trivially Non-Address to Non-Address) Multiresult Projections
-      case let ds as DestructureStructInst:
-        if let (index, newPath) = path.pop(kind: .structField) {
-          result = visitAndWalkDown(value: operand, path: path,
-                                         walkTo: (ds.results[index], newPath),
-                                         next: .interiorValue, state: state)
-        } else if path.topMatchesAnyValueField {
-          result = handleDestructureAnyValueField(value: operand, path: path, values: ds.results, state: state)
-        } else {
-          result = visitUse(operand: operand, path: path, kind: .unmatchedPath, state: state)
-        }
-      case let dt as DestructureTupleInst:
-        if let (index, newPath) = path.pop(kind: .tupleField) {
-          result = visitAndWalkDown(value: operand, path: path,
-                                         walkTo: (dt.results[index], newPath),
-                                         next: .interiorValue, state: state)
-        } else if path.topMatchesAnyValueField {
-          result = handleDestructureAnyValueField(value: operand, path: path, values: dt.results, state: state)
-        } else {
-          result = visitUse(operand: operand, path: path, kind: .unmatchedPath, state: state)
-        }
-        // MARK: Non-Address to Non-Address Forwarding Instructions
-      case is InitExistentialRefInst, is OpenExistentialRefInst,
-        is BeginBorrowInst, is CopyValueInst,
-        is UpcastInst, is UncheckedRefCastInst, is EndCOWMutationInst,
-        is RefToBridgeObjectInst, is BridgeObjectToRefInst:
-        result = visitAndWalkDown(value: operand, path: path,
-                                       walkTo: (instruction as! SingleValueInstruction, path),
-                                       next: .interiorValue, state: state)
-      case let mdi as MarkDependenceInst:
-        if operand.index == 0 {
-          result = visitAndWalkDown(value: operand, path: path, walkTo: (mdi, path),
-                                         next: .interiorValue, state: state)
-        } else {
-          result = visitUse(operand: operand, path: path, kind: .unmatchedPath, state: state)
-        }
-        // MARK: Non-Address Branching Instructions
-      case let br as BranchInst:
-        let visitResult = visitUse(operand: operand, path: path, kind: .interiorValue, state: state)
-        switch visitResult.next {
-        case .stopWalk:
-          continue
-        case .abortWalk:
-          return visitResult
-        case .continueWalk:
-          let val = br.getArgument(for: operand)
-          if let (newPath, newState) = shouldRecomputeDown(def: val, path: path, state: visitResult.state) {
-            result = walkDown(value: val, path: newPath, state: newState)
-          } else {
-            continue
-          }
-        }
-      case let cbr as CondBranchInst:
-        assert(operand.index != 0, "should not visit trivial non-address values")
-        let visitResult = visitUse(operand: operand, path: path, kind: .interiorValue, state: state)
-        switch visitResult.next {
-        case .stopWalk:
-          continue
-        case .abortWalk:
-          return visitResult
-        case .continueWalk:
-          let val = cbr.getArgument(for: operand)
-          if let (newPath, newState) = shouldRecomputeDown(def: val, path: path, state: visitResult.state) {
-            result = walkDown(value: val, path: newPath, state: newState)
-          } else {
-            continue
-          }
-        }
-      case let bcm as BeginCOWMutationInst:
-        result = visitAndWalkDown(value: operand, path: path,
-                                       walkTo: (bcm.bufferResult, path),
-                                       next: .interiorValue, state: state)
-      default:
-        let visitResult = visitUse(operand: operand, path: path, kind: .terminalValue, state: state)
-        switch visitResult.next {
-        case .abortWalk:
-          return visitResult
-        default:
-          continue
-        }
-      }
-      
-      if result.next == .abortWalk {
-        return result
-      }
-    }
-    
-    return (state, .stopWalk)
+extension ValueDefUseWalker {
+  mutating func walkDown(value operand: Operand, path: Path, state: State) -> Bool {
+    return walkDownDefault(value: operand, path: path, state: state)
   }
   
-  mutating
-  func walkDown(address def: Value, path: SmallProjectionPath, state: State) -> VisitResult {
-    for use in def.uses {
-      if use.isTypeDependent { continue }
-      
-      let result: VisitResult
-      
-      let instruction = use.instruction
-      switch instruction {
-        // MARK: Address to Address Projections
-      case let sea as StructElementAddrInst:
-        if let newPath = path.popIfMatches(.structField, index: sea.fieldIndex) {
-          result = visitAndWalkDown(address: use, path: path, walkTo: (sea, newPath),
-                                         next: .interiorValue, state: state)
-        } else {
-          result = visitUse(operand: use, path: path, kind: .unmatchedPath, state: state)
-        }
-      case let tea as TupleElementAddrInst:
-        if let newPath = path.popIfMatches(.tupleField, index: tea.fieldIndex) {
-          result = visitAndWalkDown(address: use, path: path, walkTo: (tea, newPath),
-                                         next: .interiorValue, state: state)
-        } else {
-          result = visitUse(operand: use, path: path, kind: .unmatchedPath, state: state)
-        }
-      case is InitEnumDataAddrInst, is UncheckedTakeEnumDataAddrInst:
-        let ei = instruction as! SingleValueInstruction
-        if let newPath = path.popIfMatches(.enumCase, index: (instruction as! EnumInstruction).caseIndex) {
-          result = visitAndWalkDown(address: use, path: path, walkTo: (ei, newPath),
-                                         next: .interiorValue, state: state)
-        } else {
-          result = visitUse(operand: use, path: path, kind: .unmatchedPath, state: state)
-        }
-        // MARK: Address to Address Forwarding Instructions
-      case is InitExistentialAddrInst, is OpenExistentialAddrInst, is BeginAccessInst,
-        is IndexAddrInst:
-        result = visitAndWalkDown(address: use, path: path, walkTo: (instruction as! SingleValueInstruction, path),
-                                       next: .interiorValue, state: state)
-      case let mdi as MarkDependenceInst:
-        if use.index == 0 {
-          result = visitAndWalkDown(address: use, path: path, walkTo: (mdi, path),
-                                         next: .interiorValue, state: state)
-        } else {
-          result = visitUse(operand: use, path: path, kind: .unmatchedPath, state: state)
-        }
-      default:
-        result = visitUse(operand: use, path: path, kind: .terminalValue, state: state)
-      }
-      
-      if result.next == .abortWalk {
-        return result
-      }
-    }
-    return (state, .stopWalk)
+  mutating func unmatchedPath(value: Operand, path: Path, state: State) -> Bool {
+    return false
   }
   
-  private mutating
-  func handleDestructureAnyValueField(value: Operand, path: SmallProjectionPath,
-                                      values: Instruction.Results,
-                                      state: State) -> VisitResult {
-    let visitResult = visitUse(operand: value, path: path, kind: .interiorValue, state: state)
-    switch visitResult.next {
-    case .continueWalk:
-      for resultValue in values {
-        if let (newPath, newState) = shouldRecomputeDown(def: resultValue, path: path, state: visitResult.state) {
-          let walkResult = walkDown(value: resultValue, path: newPath, state: newState)
-          switch walkResult.next {
-          case .abortWalk:
-            return walkResult
-          default:
-            break
-          }
-        }
+  mutating func walkDownDefault(value operand: Operand, path: Path, state: State) -> Bool {
+    let instruction = operand.instruction
+    switch instruction {
+    case let str as StructInst:
+      return walkDownUses(value: str,
+                      path: path.push(.structField, index: operand.index),
+                      state: state)
+    case let t as TupleInst:
+      return walkDownUses(value: t,
+                      path: path.push(.tupleField, index: operand.index),
+                      state: state)
+    case let e as EnumInst:
+      return walkDownUses(value: e,
+                          path: path.push(.enumCase, index: e.caseIndex),
+                          state: state)
+    case let se as StructExtractInst:
+      if let path = path.popIfMatches(.structField, index: se.fieldIndex) {
+        return walkDownUses(value: se, path: path, state: state)
+      } else {
+        return unmatchedPath(value: operand, path: path, state: state)
       }
-      return (state, .continueWalk)
+    case let te as TupleExtractInst:
+      if let path = path.popIfMatches(.tupleField, index: te.fieldIndex) {
+        return walkDownUses(value: te, path: path, state: state)
+      } else {
+        return unmatchedPath(value: operand, path: path, state: state)
+      }
+    case let ued as UncheckedEnumDataInst:
+      if let path = path.popIfMatches(.enumCase, index: ued.caseIndex) {
+        return walkDownUses(value: ued, path: path, state: state)
+      } else {
+        return unmatchedPath(value: operand, path: path, state: state)
+      }
+    case let ds as DestructureStructInst:
+      if let (index, path) = path.pop(kind: .structField) {
+        return walkDownUses(value: ds.results[index], path: path, state: state)
+      } else if path.topMatchesAnyValueField {
+        return walkDownUses(resultsOf: ds, path: path, state: state)
+      } else {
+        return unmatchedPath(value: operand, path: path, state: state)
+      }
+    case let dt as DestructureTupleInst:
+      if let (index, path) = path.pop(kind: .tupleField) {
+        return walkDownUses(value: dt.results[index], path: path, state: state)
+      } else if path.topMatchesAnyValueField {
+        return walkDownUses(resultsOf: dt, path: path, state: state)
+      } else {
+        return unmatchedPath(value: operand, path: path, state: state)
+      }
+    case is InitExistentialRefInst, is OpenExistentialRefInst,
+      is BeginBorrowInst, is CopyValueInst,
+      is UpcastInst, is UncheckedRefCastInst, is EndCOWMutationInst,
+      is RefToBridgeObjectInst, is BridgeObjectToRefInst:
+      return walkDownUses(value: (instruction as! SingleValueInstruction), path: path, state: state)
+    case is MarkDependenceInst:
+      assert(operand.index == 1)
+      return unmatchedPath(value: operand, path: path, state: state)
+    case let br as BranchInst:
+      let val = br.getArgument(for: operand)
+      if let (path, state) = shouldRecomputeDown(def: val, path: path, state: state) {
+        return walkDownUses(value: val, path: path, state: state)
+      } else {
+        return false
+      }
+    case let cbr as CondBranchInst:
+      let val = cbr.getArgument(for: operand)
+      if let (path, state) = shouldRecomputeDown(def: val, path: path, state: state) {
+        return walkDownUses(value: val, path: path, state: state)
+      } else {
+        return false
+      }
+    case let bcm as BeginCOWMutationInst:
+      return walkDownUses(value: bcm.bufferResult, path: path, state: state)
     default:
-      return (state, .continueWalk)
+      return leafUse(value: operand, path: path, state: state)
     }
   }
   
-  private mutating
-  func visitAndWalkDown(value: Operand, path: SmallProjectionPath,
-                        walkTo: (value: Value, path: SmallProjectionPath),
-                        next: WalkerVisitKind, state: State) -> VisitResult {
-    let visitResult = visitUse(operand: value, path: path, kind: next, state: state)
-    switch visitResult.next {
-    case .continueWalk:
-      return walkDown(value: walkTo.value, path: walkTo.path, state: visitResult.state)
-    default:
-      return visitResult
-    }
-  }
-  
-  private mutating
-  func visitAndWalkDown(
-    address operand: Operand, path: SmallProjectionPath,
-    walkTo: (value: Value, path: SmallProjectionPath), next: WalkerVisitKind, state: State) -> VisitResult {
-      let visitResult = visitUse(operand: operand, path: path, kind: next, state: state)
-      switch visitResult.next {
-      case .continueWalk:
-        return walkDown(address: walkTo.value, path: walkTo.path, state: visitResult.state)
-      default:
-        return visitResult
+  mutating func walkDownUses(value: Value, path: Path, state: State) -> Bool {
+    for operand in value.uses where !operand.isTypeDependent {
+      if walkDown(value: operand, path: path, state: state) {
+        return true
       }
     }
+    return false
+  }
+  
+  mutating func walkDownUses(resultsOf value: MultipleValueInstruction, path: Path, state: State) -> Bool {
+    for result in value.results {
+      if let (path, state) = shouldRecomputeDown(def: result, path: path, state: state) {
+        if walkDownUses(value: result, path: path, state: state) {
+          return true
+        }
+      }
+    }
+    return false
+  }
+}
+
+protocol AddressDefUseWalker : MemoizedDefUse {
+  mutating func walkDown(address: Operand, path: Path, state: State) -> Bool
+  
+  mutating func leafUse(address: Operand, path: Path, state: State) -> Bool
+  
+  mutating func unmatchedPath(address: Operand, path: Path, state: State) -> Bool
 }
 
 
-extension DefVisitor {
-  
-  mutating
-  func walkUp(value def: Value, path: SmallProjectionPath, state: State) -> VisitResult {
-    var current: (value: Value, path: SmallProjectionPath, state: State) = (def, path, state)
-    
-    while true {
-      
-      let next: (value: Value, path: SmallProjectionPath)
-      
-      let (value, path, state) = current
-      switch value {
-        // MARK: (trivially Non-Address to Non-Address) Constructions
-      case let str as StructInst:
-        if let (index, newPath) = path.pop(kind: .structField) {
-          next = (str.operands[index].value, newPath)
-        } else if path.topMatchesAnyValueField {
-          return walkAggregateInstUp(str, path: path, state: state)
-        } else {
-          return visitDef(object: value, path: path, kind: .unmatchedPath, state: state)
-        }
-      case let t as TupleInst:
-        if let (index, newPath) = path.pop(kind: .tupleField) {
-          next = (t.operands[index].value, newPath)
-        } else if path.topMatchesAnyValueField {
-          return walkAggregateInstUp(t, path: path, state: state)
-        } else {
-          return visitDef(object: value, path: path, kind: .unmatchedPath, state: state)
-        }
-      case let e as EnumInst:
-        if let newPath = path.popIfMatches(.enumCase, index: e.caseIndex),
-           let operand = e.operand {
-          next = (operand, newPath)
-        } else {
-          return visitDef(object: value, path: path, kind: .unmatchedPath, state: state)
-        }
-        // MARK: Non-Address to Non-Address Projections
-      case let se as StructExtractInst:
-        next = (se.operand, path.push(.structField, index: se.fieldIndex))
-      case let te as TupleExtractInst:
-        next = (te.operand, path.push(.tupleField, index: te.fieldIndex))
-      case let ued as UncheckedEnumDataInst:
-        next = (ued.operand, path.push(.enumCase, index: ued.caseIndex))
-      case let mvr as MultipleValueInstructionResult:
-        // MARK: (trivially Non-Address to Non-Address) Multiresult Projections
-        if let ds = mvr.instruction as? DestructureStructInst {
-          next = (ds.operand, path.push(.structField, index: mvr.index))
-        } else if let dt = mvr.instruction as? DestructureTupleInst {
-          next = (dt.operand, path.push(.tupleField, index: mvr.index))
-        } else if let bcm = mvr.instruction as? BeginCOWMutationInst {
-          // MARK: Non-Address to Non-Address Forwarding Instruction
-          next = (bcm.operand, path)
-        } else {
-          return visitDef(object: value, path: path, kind: .terminalValue, state: state)
-        }
-        // MARK: Non-Address to Non-Address Forwarding Instructions
-      case is InitExistentialRefInst, is OpenExistentialRefInst,
-        is BeginBorrowInst, is CopyValueInst,
-        is UpcastInst, is UncheckedRefCastInst, is EndCOWMutationInst,
-        is RefToBridgeObjectInst, is BridgeObjectToRefInst:
-        next = ((value as! Instruction).operands[0].value, path)
-        // MARK: Non-Address Block Arguments
-      case let arg as BlockArgument where arg.isPhiArgument:
-        let visitResult = visitDef(object: arg, path: path, kind: .interiorValue, state: state)
-        switch visitResult.next {
-        case .continueWalk:
-          for incoming in arg.incomingPhiValues {
-            if let (newPath, newState) = shouldRecomputeUp(def: incoming, path: path, state: visitResult.state) {
-              let walkResult = walkUp(value: incoming, path: newPath, state: newState)
-              if walkResult.next == .abortWalk {
-                return walkResult
-              }
-            }
-          }
-          return visitResult
-        default:
-          return visitResult
-        }
-      default:
-        return visitDef(object: value, path: path, kind: .terminalValue, state: state)
-      }
-      
-      let visitResult = visitDef(object: value, path: path, kind: .interiorValue, state: state)
-      
-      switch visitResult.next {
-      case .continueWalk:
-        current = (next.value, next.path, visitResult.state)
-      default:
-        return visitResult
-      }
-    }
+extension AddressDefUseWalker {
+  mutating func walkDown(address operand: Operand, path: Path, state: State) -> Bool {
+    return walkDownDefault(address: operand, path: path, state: state)
   }
   
-  mutating
-  func walkUp(address def: Value, path: SmallProjectionPath, state: State) -> VisitResult {
-    var current = (def, path, state)
-    
-    while true {
-      let next: (def: Value, path: SmallProjectionPath)
-      
-      let (def, path, state) = current
-      switch def {
-        // MARK: Address to Address Projections
-      case let sea as StructElementAddrInst:
-        next = (sea.operand, path.push(.structField, index: sea.fieldIndex))
-      case let tea as TupleElementAddrInst:
-        next = (tea.operand, path.push(.tupleField, index: tea.fieldIndex))
-      case is InitEnumDataAddrInst, is UncheckedTakeEnumDataAddrInst:
-        next = ((def as! UnaryInstruction).operand, path.push(.enumCase, index: (def as! EnumInstruction).caseIndex))
-        // MARK: Address to Address Forwarding Instructions
-      case is InitExistentialAddrInst, is OpenExistentialAddrInst, is BeginAccessInst, is IndexAddrInst:
-        next = ((def as! Instruction).operands[0].value, path)
-      case let mdi as MarkDependenceInst:
-        next = (mdi.operands[0].value, path)
-      default:
-        return visitDef(object: def, path: path, kind: .terminalValue, state: state)
-      }
-      
-      let visitResult = visitDef(object: def, path: path, kind: .interiorValue, state: state)
-      
-      switch visitResult.next {
-      case .continueWalk:
-        current = (next.def, next.path, visitResult.state)
-      default:
-        return visitResult
-      }
-    }
+  mutating func unmatchedPath(address: Operand, path: Path, state: State) -> Bool {
+    return false
   }
   
-  private mutating
-  func walkAggregateInstUp(_ inst: SingleValueInstruction, path: SmallProjectionPath, state: State) -> VisitResult {
-    let visitResult = visitDef(object: inst, path: path, kind: .interiorValue, state: state)
-    switch visitResult.next {
-    case .continueWalk:
-      for op in inst.operands {
-        if let (newPath, newState) = shouldRecomputeUp(def: op.value, path: path, state: visitResult.state) {
-          let walkResult = walkUp(value: op.value, path: newPath, state: newState)
-          if walkResult.next == .abortWalk {
-            return walkResult
-          }
-        }
+  mutating func walkDownDefault(address operand: Operand, path: Path, state: State) -> Bool {
+    let instruction = operand.instruction
+    switch instruction {
+    case let sea as StructElementAddrInst:
+      if let path = path.popIfMatches(.structField, index: sea.fieldIndex) {
+        return walkDownUses(address: sea, path: path, state: state)
+      } else {
+        return unmatchedPath(address: operand, path: path, state: state)
       }
-      return visitResult
+    case let tea as TupleElementAddrInst:
+      if let path = path.popIfMatches(.tupleField, index: tea.fieldIndex) {
+        return walkDownUses(address: tea, path: path, state: state)
+      } else {
+        return unmatchedPath(address: operand, path: path, state: state)
+      }
+    case is InitEnumDataAddrInst, is UncheckedTakeEnumDataAddrInst:
+      let ei = instruction as! SingleValueInstruction
+      if let path = path.popIfMatches(.enumCase, index: (instruction as! EnumInstruction).caseIndex) {
+        return walkDownUses(address: ei, path: path, state: state)
+      } else {
+        return unmatchedPath(address: operand, path: path, state: state)
+      }
+    case is InitExistentialAddrInst, is OpenExistentialAddrInst, is BeginAccessInst,
+      is IndexAddrInst:
+      return walkDownUses(address: instruction as! SingleValueInstruction, path: path, state: state)
+    case let mdi as MarkDependenceInst:
+      assert(operand.index == 0)
+      return walkDownUses(address: mdi, path: path, state: state)
     default:
-      return visitResult
+      return leafUse(address: operand, path: path, state: state)
     }
   }
   
+  mutating func walkDownUses(address: Value, path: Path, state: State) -> Bool {
+    for operand in address.uses where !operand.isTypeDependent {
+      if walkDown(address: operand, path: path, state: state) {
+        return true
+      }
+    }
+    return false
+  }
+}
+
+protocol ValueUseDefWalker : MemoizedUseDef {
+  associatedtype State
+  
+  mutating func walkUp(value: Value, path: Path, state: State) -> Bool
+  
+  mutating func rootDef(value: Value, path: Path, state: State) -> Bool
+  
+  mutating func unmatchedPath(value: Value, path: Path, state: State) -> Bool
+}
+
+extension ValueUseDefWalker {
+  mutating func walkUp(value: Value, path: Path, state: State) -> Bool {
+    return walkUpDefault(value: value, path: path, state: state)
+  }
+  
+  mutating func unmatchedPath(value: Value, path: Path, state: State) -> Bool {
+    return false
+  }
+  
+  mutating func walkUpDefault(value def: Value, path: Path, state: State) -> Bool {
+    switch def {
+    case let str as StructInst:
+      if let (index, path) = path.pop(kind: .structField) {
+        return walkUp(value: str.operands[index].value, path: path, state: state)
+      } else if path.topMatchesAnyValueField {
+        return walkUp(operandsOf: str, path: path, state: state)
+      } else {
+        return unmatchedPath(value: str, path: path, state: state)
+      }
+    case let t as TupleInst:
+      if let (index, path) = path.pop(kind: .tupleField) {
+        return walkUp(value: t.operands[index].value, path: path, state: state)
+      } else if path.topMatchesAnyValueField {
+        return walkUp(operandsOf: t, path: path, state: state)
+      } else {
+        return unmatchedPath(value: t, path: path, state: state)
+      }
+    case let e as EnumInst:
+      if let path = path.popIfMatches(.enumCase, index: e.caseIndex),
+         let operand = e.operand {
+        return walkUp(value: operand, path: path, state: state)
+      } else {
+        return unmatchedPath(value: e, path: path, state: state)
+      }
+    case let se as StructExtractInst:
+      return walkUp(value: se.operand, path: path.push(.structField, index: se.fieldIndex), state: state)
+    case let te as TupleExtractInst:
+      return walkUp(value: te.operand, path: path.push(.tupleField, index: te.fieldIndex), state: state)
+    case let ued as UncheckedEnumDataInst:
+      return walkUp(value: ued.operand, path: path.push(.enumCase, index: ued.caseIndex), state: state)
+    case let mvr as MultipleValueInstructionResult:
+      let instruction = mvr.instruction
+      if let ds = instruction as? DestructureStructInst {
+        return walkUp(value: ds.operand, path: path.push(.structField, index: mvr.index), state: state)
+      } else if let dt = instruction as? DestructureTupleInst {
+        return walkUp(value: dt.operand, path: path.push(.tupleField, index: mvr.index), state: state)
+      } else if let bcm = instruction as? BeginCOWMutationInst {
+        return walkUp(value: bcm.operand, path: path, state: state)
+      } else {
+        return rootDef(value: mvr, path: path, state: state)
+      }
+    case is InitExistentialRefInst, is OpenExistentialRefInst,
+      is BeginBorrowInst, is CopyValueInst,
+      is UpcastInst, is UncheckedRefCastInst, is EndCOWMutationInst,
+      is RefToBridgeObjectInst, is BridgeObjectToRefInst:
+      return walkUp(value: (def as! Instruction).operands[0].value, path: path, state: state)
+    case let arg as BlockArgument where arg.isPhiArgument:
+      for incoming in arg.incomingPhiValues {
+        if let (path, state) = shouldRecomputeUp(def: incoming, path: path, state: state) {
+          if walkUp(value: incoming, path: path, state: state) {
+            return true
+          }
+        }
+      }
+      return false
+    default:
+      return rootDef(value: def, path: path, state: state)
+    }
+  }
+  
+  mutating func walkUp(operandsOf def: SingleValueInstruction, path: Path, state: State) -> Bool {
+    for operand in def.operands {
+      if let (path, state) = shouldRecomputeUp(def: operand.value, path: path, state: state) {
+        if walkUp(value: operand.value, path: path, state: state) {
+          return true
+        }
+      }
+    }
+    return false
+  }
+  
+}
+
+protocol AddressUseDefWalker : MemoizedUseDef {
+  mutating func walkUp(address: Value, path: Path, state: State) -> Bool
+  
+  mutating func rootDef(address: Value, path: Path, state: State) -> Bool
+  
+  mutating func unmatchedPath(address: Value, path: Path, state: State) -> Bool
+}
+
+extension AddressUseDefWalker {
+  
+  mutating func walkUp(address: Value, path: Path, state: State) -> Bool {
+    return walkUpDefault(address: address, path: path, state: state)
+  }
+  
+  mutating func unmatchedPath(address: Value, path: Path, state: State) -> Bool {
+    return false
+  }
+  
+  mutating func walkUpDefault(address def: Value, path: Path, state: State) -> Bool {
+    switch def {
+    case let sea as StructElementAddrInst:
+      return walkUp(address: sea.operand, path: path.push(.structField, index: sea.fieldIndex), state: state)
+    case let tea as TupleElementAddrInst:
+      return walkUp(address: tea.operand, path: path.push(.tupleField, index: tea.fieldIndex), state: state)
+    case is InitEnumDataAddrInst, is UncheckedTakeEnumDataAddrInst:
+      return walkUp(address: (def as! UnaryInstruction).operand,
+                    path: path.push(.enumCase, index: (def as! EnumInstruction).caseIndex), state: state)
+    case is InitExistentialAddrInst, is OpenExistentialAddrInst, is BeginAccessInst, is IndexAddrInst:
+      return walkUp(address: (def as! Instruction).operands[0].value, path: path, state: state)
+    case let mdi as MarkDependenceInst:
+      return walkUp(address: mdi.operands[0].value, path: path, state: state)
+    default:
+      return rootDef(address: def, path: path, state: state)
+    }
+  }
 }

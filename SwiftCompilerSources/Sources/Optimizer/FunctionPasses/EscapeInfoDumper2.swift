@@ -12,50 +12,43 @@
 
 import SIL
 
+class EIWVisitor : EscapeInfoWalkerVisitor {
+  var results: Set<String> =  Set()
+  
+  func visitUse(operand: Operand, path: Path, state: State) -> UseVisitResult {
+    print("visitUse \"\(path)\": #\(operand.index) \(operand.instruction)")
+    if operand.instruction is ReturnInst {
+      results.insert("return[\(path)]")
+      return .ignore
+    }
+    return .continueWalk
+  }
+  
+  func visitDef(def: Value, path: Path, state: State) -> DefVisitResult {
+    print("visitDef \"\(path)\": \(def)")
+    guard let arg = def as? FunctionArgument else {
+      return .continueWalkUp
+    }
+    results.insert("arg\(arg.index)[\(path)]")
+    return .walkDown
+  }
+}
+
 let escapeInfoDumper2 = FunctionPass(name: "dump-escape-info2", {
   (function: Function, context: PassContext) in
   
   print("Escape information for \(function.name):")
   
-  struct VisitFuns : VisitFunctions {
-    typealias State = EscapeInfoState
-    var results: Set<String> = Set()
-    
-    mutating
-    func reset() {
-      results.removeAll(keepingCapacity: true)
-    }
-    
-    mutating
-    func visitUse(operand: Operand, path: SmallProjectionPath, state: EscapeInfoState) -> VisitResult {
-      print("visitUse \"\(path)\": #\(operand.index) \(operand.instruction)")
-      if operand.instruction is ReturnInst {
-        results.insert("return[\(path)]")
-        return (state, .stopWalk)
-      }
-      return (state, .continueWalk)
-    }
-    
-    mutating
-    func visitDef(def: Value, path: SmallProjectionPath, state: EscapeInfoState) -> VisitResult {
-      print("visitDef \"\(path)\": \(def)")
-      guard let arg = def as? FunctionArgument else {
-        return (state, .continueWalk)
-      }
-      results.insert("arg\(arg.index)[\(path)]")
-      return (state.with(walkDown: true), .continueWalk)
-    }
-  }
-  
-  var EIV = EscapeInfoVisitor(calleeAnalysis: context.calleeAnalysis, visitFunctions: VisitFuns())
+  let visitor = EIWVisitor()
+  var walker = EscapeInfoWalker(calleeAnalysis: context.calleeAnalysis)
   
   for block in function.blocks {
     for inst in block.instructions {
       if let allocRef = inst as? AllocRefInst {
         
-        EIV.visitFunctions.reset()
-        let escapes = EIV.isEscaping(object: allocRef)
-        let results = EIV.visitFunctions.results
+        visitor.results.removeAll(keepingCapacity: true)
+        let escapes = walker.isEscaping(object: allocRef, visitor: visitor)
+        let results = visitor.results
         
         let res: String
         if escapes {
