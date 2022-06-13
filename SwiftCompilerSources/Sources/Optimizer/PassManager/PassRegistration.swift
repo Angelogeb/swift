@@ -45,6 +45,7 @@ private func registerSwiftPasses() {
   registerPass(addressEscapeInfoDumper, { addressEscapeInfoDumper.run($0) })
   registerPass(computeEffects, { computeEffects.run($0) })
   registerPass(objCBridgingOptimization, { objCBridgingOptimization.run($0) })
+  registerPass(computeEffects2, { computeEffects2.run($0) })
   registerPass(stackPromotion, { stackPromotion.run($0) })
   registerPass(simplifyBeginCOWMutationPass, { simplifyBeginCOWMutationPass.run($0) })
   registerPass(simplifyGlobalValuePass, { simplifyGlobalValuePass.run($0) })

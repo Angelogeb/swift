@@ -16,7 +16,6 @@ class EIWVisitor : EscapeInfoWalkerVisitor {
   var results: Set<String> =  Set()
   
   func visitUse(operand: Operand, path: Path, state: State) -> UseVisitResult {
-    print("visitUse \"\(path)\": #\(operand.index) \(operand.instruction)")
     if operand.instruction is ReturnInst {
       results.insert("return[\(path)]")
       return .ignore
@@ -25,7 +24,6 @@ class EIWVisitor : EscapeInfoWalkerVisitor {
   }
   
   func visitDef(def: Value, path: Path, state: State) -> DefVisitResult {
-    print("visitDef \"\(path)\": \(def)")
     guard let arg = def as? FunctionArgument else {
       return .continueWalkUp
     }

@@ -46,6 +46,8 @@ extension EscapeInfoWalkerVisitor {
 
 struct DefaultEscapeInfoWalkerVisitor : EscapeInfoWalkerVisitor {}
 
+fileprivate let DEBUGWALK = true
+
 /// A utility for checking if a value escapes and for finding the escape points.
 ///
 /// The EscapeInfo starts at the initial value and alternately walks in two directions:
@@ -227,25 +229,37 @@ struct EscapeInfoWalker : ValueDefUseWalker, AddressDefUseWalker, ValueUseDefWal
   }
   
   mutating func walkDown(value: Operand, path: Path, state: State) -> Bool {
-    switch visitor.visitUse(operand: value, path: path, state: state) {
-    case .continueWalk:
-      return walkDownDefault(value: value, path: path, state: state)
-    case .ignore:
-      return false
-    case .abort:
-      return true
+    if hasRelevantType(value.value, at: path) {
+      if DEBUGWALK {
+        print("visitUse \"\(path)\": #\(value.index) \(value.instruction)")
+      }
+      switch visitor.visitUse(operand: value, path: path, state: state) {
+      case .continueWalk:
+        return walkDownDefault(value: value, path: path, state: state)
+      case .ignore:
+        return false
+      case .abort:
+        return true
+      }
     }
+    return false
   }
   
   mutating func walkDown(address: Operand, path: Path, state: State) -> Bool {
-    switch visitor.visitUse(operand: address, path: path, state: state) {
-    case .continueWalk:
-      return walkDownDefault(address: address, path: path, state: state)
-    case .ignore:
-      return false
-    case .abort:
-      return true
+    if hasRelevantType(address.value, at: path) {
+      if DEBUGWALK {
+        print("visitUse \"\(path)\": #\(address.index) \(address.instruction)")
+      }
+      switch visitor.visitUse(operand: address, path: path, state: state) {
+      case .continueWalk:
+        return walkDownDefault(address: address, path: path, state: state)
+      case .ignore:
+        return false
+      case .abort:
+        return true
+      }
     }
+    return false
   }
   
   mutating func leafUse(any operand: Operand, path: Path, state: State) -> Bool {
@@ -393,6 +407,9 @@ struct EscapeInfoWalker : ValueDefUseWalker, AddressDefUseWalker, ValueUseDefWal
   }
   
   mutating func walkUp(value: Value, path: Path, state: State) -> Bool {
+    if DEBUGWALK {
+      print("visitDef \"\(path)\": \(value)")
+    }
     switch visitor.visitDef(def: value, path: path, state: state) {
     case .continueWalkUp:
       return walkUpDefault(value: value, path: path, state: state)
@@ -406,6 +423,9 @@ struct EscapeInfoWalker : ValueDefUseWalker, AddressDefUseWalker, ValueUseDefWal
   }
   
   mutating func walkUp(address: Value, path: Path, state: State) -> Bool {
+    if DEBUGWALK {
+      print("visitDef \"\(path)\": \(address)")
+    }
     switch visitor.visitDef(def: address, path: path, state: state) {
     case .continueWalkUp:
       return walkUpDefault(address: address, path: path, state: state)
