@@ -229,7 +229,8 @@ struct EscapeInfoWalker : ValueDefUseWalker, AddressDefUseWalker, ValueUseDefWal
   }
   
   mutating func walkDown(value: Operand, path: Path, state: State) -> Bool {
-    if hasRelevantType(value.value, at: path) {
+    // FIXME: match on PartialApply
+    if hasRelevantType(value.value, at: path) || value.value is PartialApplyInst {
       if DEBUGWALK {
         print("visitUse \"\(path)\": #\(value.index) \(value.instruction)")
       }
@@ -407,35 +408,41 @@ struct EscapeInfoWalker : ValueDefUseWalker, AddressDefUseWalker, ValueUseDefWal
   }
   
   mutating func walkUp(value: Value, path: Path, state: State) -> Bool {
-    if DEBUGWALK {
-      print("visitDef \"\(path)\": \(value)")
+    if hasRelevantType(value, at: path) {
+      if DEBUGWALK {
+        print("visitDef \"\(path)\": \(value)")
+      }
+      switch visitor.visitDef(def: value, path: path, state: state) {
+      case .continueWalkUp:
+        return walkUpDefault(value: value, path: path, state: state)
+      case .walkDown:
+        return cachedWalkDown(def: value, path: path, state: state.with(knownType: nil))
+      case .ignore:
+        return false
+      case .abort:
+        return true
+      }
     }
-    switch visitor.visitDef(def: value, path: path, state: state) {
-    case .continueWalkUp:
-      return walkUpDefault(value: value, path: path, state: state)
-    case .walkDown:
-      return cachedWalkDown(def: value, path: path, state: state.with(knownType: nil))
-    case .ignore:
-      return false
-    case .abort:
-      return true
-    }
+    return false
   }
   
   mutating func walkUp(address: Value, path: Path, state: State) -> Bool {
-    if DEBUGWALK {
-      print("visitDef \"\(path)\": \(address)")
+    if hasRelevantType(address, at: path) {
+      if DEBUGWALK {
+        print("visitDef \"\(path)\": \(address)")
+      }
+      switch visitor.visitDef(def: address, path: path, state: state) {
+      case .continueWalkUp:
+        return walkUpDefault(address: address, path: path, state: state)
+      case .walkDown:
+        return cachedWalkDown(def: address, path: path, state: state)
+      case .ignore:
+        return false
+      case .abort:
+        return true
+      }
     }
-    switch visitor.visitDef(def: address, path: path, state: state) {
-    case .continueWalkUp:
-      return walkUpDefault(address: address, path: path, state: state)
-    case .walkDown:
-      return cachedWalkDown(def: address, path: path, state: state)
-    case .ignore:
-      return false
-    case .abort:
-      return true
-    }
+    return false
   }
   
   mutating func rootDef(any def: Value, path: SmallProjectionPath, state: State) -> Bool {
