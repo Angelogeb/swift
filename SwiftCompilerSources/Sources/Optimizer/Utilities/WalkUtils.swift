@@ -13,21 +13,21 @@
 import SIL
 
 
-protocol MemoizedDefUse {
+protocol DefUseWalkerBase {
   typealias Path = SmallProjectionPath
   associatedtype State
   
   mutating func shouldRecomputeDown(def: Value, path: Path, state: State) -> (Path, State)?
 }
 
-protocol MemoizedUseDef {
+protocol UseDefWalkerBase {
   typealias Path = SmallProjectionPath
   associatedtype State
   
   mutating func shouldRecomputeUp(def: Value, path: Path, state: State) -> (Path, State)?
 }
 
-protocol ValueDefUseWalker : MemoizedDefUse {
+protocol ValueDefUseWalker : DefUseWalkerBase {
   mutating func walkDown(value: Operand, path: Path, state: State) -> Bool
   
   mutating func leafUse(value: Operand, path: Path, state: State) -> Bool
@@ -144,7 +144,7 @@ extension ValueDefUseWalker {
   }
 }
 
-protocol AddressDefUseWalker : MemoizedDefUse {
+protocol AddressDefUseWalker : DefUseWalkerBase {
   mutating func walkDown(address: Operand, path: Path, state: State) -> Bool
   
   mutating func leafUse(address: Operand, path: Path, state: State) -> Bool
@@ -205,7 +205,7 @@ extension AddressDefUseWalker {
   }
 }
 
-protocol ValueUseDefWalker : MemoizedUseDef {
+protocol ValueUseDefWalker : UseDefWalkerBase {
   associatedtype State
   
   mutating func walkUp(value: Value, path: Path, state: State) -> Bool
@@ -298,7 +298,7 @@ extension ValueUseDefWalker {
   
 }
 
-protocol AddressUseDefWalker : MemoizedUseDef {
+protocol AddressUseDefWalker : UseDefWalkerBase {
   mutating func walkUp(address: Value, path: Path, state: State) -> Bool
   
   mutating func rootDef(address: Value, path: Path, state: State) -> Bool
