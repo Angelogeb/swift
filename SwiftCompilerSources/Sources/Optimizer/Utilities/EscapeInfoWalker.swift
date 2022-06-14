@@ -229,8 +229,7 @@ struct EscapeInfoWalker : ValueDefUseWalker, AddressDefUseWalker, ValueUseDefWal
   }
   
   mutating func walkDown(value: Operand, path: Path, state: State) -> Bool {
-    // FIXME: match on PartialApply
-    if hasRelevantType(value.value, at: path) || value.value is PartialApplyInst {
+    if hasRelevantType(value.value, at: path) {
       if DEBUGWALK {
         print("visitUse \"\(path)\": #\(value.index) \(value.instruction)")
       }
@@ -616,6 +615,9 @@ struct EscapeInfoWalker : ValueDefUseWalker, AddressDefUseWalker, ValueUseDefWal
   /// Returns true if the type of `value` at `path` is relevant and should be tracked.
   private func hasRelevantType(_ value: Value, at path: Path) -> Bool {
     let type = value.type
+    // FIXME: remove partial apply check when `isNonTrivialOrContainsRawPointer`
+    //        is fixed
+    if value is PartialApplyInst { return true }
     if type.isNonTrivialOrContainsRawPointer(in: value.function) { return true }
     
     // For selected addresses we also need to consider trivial types (`value`
