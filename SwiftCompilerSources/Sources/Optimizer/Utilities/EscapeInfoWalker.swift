@@ -263,7 +263,7 @@ struct EscapeInfoWalker : ValueDefUseWalker, AddressDefUseWalker, ValueUseDefWal
     return false
   }
   
-  mutating func leafUse(any operand: Operand, path: Path, state: State) -> Bool {
+  mutating func leafUse(value operand: Operand, path: Path, state: State) -> Bool {
     let instruction = operand.instruction
     switch instruction {
     case let rta as RefTailAddrInst:
@@ -296,18 +296,70 @@ struct EscapeInfoWalker : ValueDefUseWalker, AddressDefUseWalker, ValueUseDefWal
       }
     case is StoreInst, is StoreWeakInst, is StoreUnownedInst:
       let store = instruction as! StoringInstruction
-      if operand == store.sourceOperand {
-        return walkUp(address: store.destination, path: path, state: state)
-      } else {
-        assert(operand == store.destinationOperand)
-        if let si = store as? StoreInst, si.destinationOwnership == .assign {
-          if handleDestroy(of: operand.value, path: path, followStores: state.followStores, knownType: nil) {
-            return true
-          }
+      assert(operand == store.sourceOperand )
+      return walkUp(address: store.destination, path: path, state: state)
+    case is DestroyValueInst, is ReleaseValueInst, is StrongReleaseInst:
+      if handleDestroy(of: operand.value, path: path, followStores: state.followStores, knownType: state.knownType) {
+        return true
+      }
+    case is ReturnInst:
+      return isEscaping
+    case is ApplyInst, is TryApplyInst, is BeginApplyInst:
+      return walkDownCallee(argOp: operand, apply: instruction as! FullApplySite, path: path, state: state)
+    case let pai as PartialApplyInst:
+      if walkDownCallee(argOp: operand, apply: pai, path: path, state: state.with(knownType: nil)) {
+        return true
+      }
+
+      // We need to follow the partial_apply value for two reasons:
+      // 1. the closure (with the captured values) itself can escape
+      // 2. something can escape in a destructor when the context is destroyed
+      return walkDownUses(value: pai, path: path, state: state.with(knownType: nil))
+    case let pta as PointerToAddressInst:
+      assert(operand.index == 0)
+      return walkDownUses(address: pta, path: path, state: state.with(knownType: nil))
+    case let bi as BuiltinInst:
+      switch bi.id {
+      case .DestroyArray:
+        if operand.index != 1 ||
+            path.popAllValueFields().popIfMatches(.anyClassField) != nil {
+          return isEscaping
         }
-        if state.followStores {
-          return walkUp(value: store.source, path: path, state: state)
+      default:
+        return isEscaping
+      }
+    case is StrongRetainInst, is RetainValueInst, is DebugValueInst, is ValueMetatypeInst,
+      is InitExistentialMetatypeInst, is OpenExistentialMetatypeInst,
+      is ExistentialMetatypeInst, is DeallocRefInst, is SetDeallocatingInst, is FixLifetimeInst,
+      is ClassifyBridgeObjectInst, is BridgeObjectToWordInst, is EndBorrowInst,
+      is StrongRetainInst, is RetainValueInst,
+      is ClassMethodInst, is SuperMethodInst, is ObjCMethodInst,
+      is ObjCSuperMethodInst, is WitnessMethodInst, is DeallocStackRefInst:
+      return false
+    case is DeallocStackInst:
+      // dealloc_stack %f : $@noescape @callee_guaranteed () -> ()
+      // type is a value
+      assert(operand.value.definingInstruction is PartialApplyInst)
+      return false
+    default:
+      return isEscaping
+    }
+    return false
+  }
+  
+  mutating func leafUse(address operand: Operand, path: Path, state: State) -> Bool {
+    let instruction = operand.instruction
+    switch instruction {
+    case is StoreInst, is StoreWeakInst, is StoreUnownedInst:
+      let store = instruction as! StoringInstruction
+      assert(operand == store.destinationOperand)
+      if let si = store as? StoreInst, si.destinationOwnership == .assign {
+        if handleDestroy(of: operand.value, path: path, followStores: state.followStores, knownType: nil) {
+          return true
         }
+      }
+      if state.followStores {
+        return walkUp(value: store.source, path: path, state: state)
       }
     case let copyAddr as CopyAddrInst:
       if canIgnoreForLoadOrArgument(path) { return false }
@@ -325,7 +377,7 @@ struct EscapeInfoWalker : ValueDefUseWalker, AddressDefUseWalker, ValueUseDefWal
           return walkUp(value: copyAddr.source, path: path, state: state)
         }
       }
-    case is DestroyValueInst, is ReleaseValueInst, is StrongReleaseInst, is DestroyAddrInst:
+    case is DestroyAddrInst:
       if handleDestroy(of: operand.value, path: path, followStores: state.followStores, knownType: state.knownType) {
         return true
       }
@@ -351,41 +403,15 @@ struct EscapeInfoWalker : ValueDefUseWalker, AddressDefUseWalker, ValueUseDefWal
       return walkDownUses(value: svi, path: path, state: state.with(knownType: nil))
     case let atp as AddressToPointerInst:
       return walkDownUses(value: atp, path: path, state: state.with(knownType: nil))
-    case is PointerToAddressInst, is IndexAddrInst:
+    case let ia as IndexAddrInst:
       assert(operand.index == 0)
-      return walkDownUses(address: instruction as! SingleValueInstruction, path: path, state: state.with(knownType: nil))
-    case let bi as BuiltinInst:
-      switch bi.id {
-      case .DestroyArray:
-        if operand.index != 1 ||
-            path.popAllValueFields().popIfMatches(.anyClassField) != nil {
-          return isEscaping
-        }
-      default:
-        return isEscaping
-      }
-    case is DeallocStackInst, is StrongRetainInst, is RetainValueInst,
-      is DebugValueInst, is ValueMetatypeInst, is InjectEnumAddrInst,
-      is InitExistentialMetatypeInst, is OpenExistentialMetatypeInst,
-      is ExistentialMetatypeInst, is DeallocRefInst, is SetDeallocatingInst,
-      is FixLifetimeInst, is ClassifyBridgeObjectInst, is BridgeObjectToWordInst,
-      is EndBorrowInst, is EndAccessInst,
-      is StrongRetainInst, is RetainValueInst,
-      is ClassMethodInst, is SuperMethodInst, is ObjCMethodInst,
-      is ObjCSuperMethodInst, is WitnessMethodInst,is DeallocStackRefInst:
+      return walkDownUses(address: ia, path: path, state: state.with(knownType: nil))
+    case is DeallocStackInst, is InjectEnumAddrInst, is FixLifetimeInst, is EndBorrowInst, is EndAccessInst:
       return false
     default:
       return isEscaping
     }
     return false
-  }
-  
-  mutating func leafUse(value: Operand, path: Path, state: State) -> Bool {
-    return leafUse(any: value, path: path, state: state)
-  }
-  
-  mutating func leafUse(address: Operand, path: Path, state: State) -> Bool {
-    return leafUse(any: address, path: path, state: state)
   }
   
   mutating func shouldRecomputeDown(def: Value, path: Path, state: State) -> (Path, State)? {
@@ -445,19 +471,13 @@ struct EscapeInfoWalker : ValueDefUseWalker, AddressDefUseWalker, ValueUseDefWal
     return false
   }
   
-  mutating func rootDef(any def: Value, path: SmallProjectionPath, state: State) -> Bool {
+  mutating func rootDef(value def: Value, path: Path, state: State) -> Bool {
     let state = state.with(knownType: nil)
     switch def {
     case is AllocRefInst, is AllocRefDynamicInst:
       return cachedWalkDown(def: def, path: path, state: state.with(knownType: def.type))
-    case is AllocStackInst, is AllocBoxInst:
+    case is AllocBoxInst:
       return cachedWalkDown(def: def, path: path, state: state)
-    case let arg as FunctionArgument:
-      if canIgnoreForLoadOrArgument(path) && arg.isExclusiveIndirectParameter && !state.followStores {
-        return cachedWalkDown(def: def, path: path, state: state)
-      } else {
-        return isEscaping
-      }
     case let arg as BlockArgument:
       let block = arg.block
       switch block.singlePredecessor!.terminator {
@@ -474,13 +494,27 @@ struct EscapeInfoWalker : ValueDefUseWalker, AddressDefUseWalker, ValueUseDefWal
       }
     case let ap as ApplyInst:
       return walkUpApplyResult(apply: ap, path: path, state: state)
-      // MARK: non-address to address mode change
     case is LoadInst, is LoadWeakInst, is LoadUnownedInst:
       return walkUp(address: (def as! UnaryInstruction).operand,
                     path: path, state: state.with(followStores: true))
     case let atp as AddressToPointerInst:
       return walkUp(address: atp.operand, path: path, state: state)
-      // MARK: address to non-address mode change
+    default:
+      return isEscaping
+    }
+  }
+  
+  mutating func rootDef(address def: Value, path: SmallProjectionPath, state: State) -> Bool {
+    let state = state.with(knownType: nil)
+    switch def {
+    case is AllocStackInst:
+      return cachedWalkDown(def: def, path: path, state: state)
+    case let arg as FunctionArgument:
+      if canIgnoreForLoadOrArgument(path) && arg.isExclusiveIndirectParameter && !state.followStores {
+        return cachedWalkDown(def: def, path: path, state: state)
+      } else {
+        return isEscaping
+      }
     case is PointerToAddressInst, is IndexAddrInst:
       return walkUp(value: (def as! SingleValueInstruction).operands[0].value, path: path, state: state)
     case let rta as RefTailAddrInst:
@@ -490,17 +524,8 @@ struct EscapeInfoWalker : ValueDefUseWalker, AddressDefUseWalker, ValueUseDefWal
     case let pb as ProjectBoxInst:
       return walkUp(value: pb.operand, path: path.push(.classField, index: pb.fieldIndex), state: state)
     default:
-      // MARK: can't recognize origin of value
       return isEscaping
     }
-  }
-  
-  mutating func rootDef(value: Value, path: Path, state: State) -> Bool {
-    return rootDef(any: value, path: path, state: state)
-  }
-  
-  mutating func rootDef(address: Value, path: Path, state: State) -> Bool {
-    return rootDef(any: address, path: path, state: state)
   }
   
   mutating func shouldRecomputeUp(def: Value, path: Path, state: State) -> (Path, State)? {
