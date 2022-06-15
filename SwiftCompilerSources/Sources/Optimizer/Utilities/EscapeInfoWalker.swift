@@ -338,7 +338,9 @@ fileprivate struct EscapeInfoWalkerImpl<V: EscapeInfoWalkerVisitor> : ValueDefUs
         return true
       }
 
-      // We need to follow the partial_apply value for two reasons:
+      // For `stack` closures, `hasRelevantType` in `walkDown` will return false
+      // stopping the walk since they don't escape
+      // For non-stack closures, we need to follow the partial_apply value for two reasons:
       // 1. the closure (with the captured values) itself can escape
       // 2. something can escape in a destructor when the context is destroyed
       return walkDownUses(value: pai, path: path, state: state.with(knownType: nil))
