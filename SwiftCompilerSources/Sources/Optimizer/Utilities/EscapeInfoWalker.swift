@@ -641,9 +641,6 @@ fileprivate struct EscapeInfoWalkerImpl<V: EscapeInfoWalkerVisitor> : ValueDefUs
   /// Returns true if the type of `value` at `path` is relevant and should be tracked.
   private func hasRelevantType(_ value: Value, at path: Path) -> Bool {
     let type = value.type
-    // FIXME: remove partial apply check when `isNonTrivialOrContainsRawPointer`
-    //        is fixed
-    if value is PartialApplyInst { return true }
     if type.isNonTrivialOrContainsRawPointer(in: value.function) { return true }
     
     // For selected addresses we also need to consider trivial types (`value`
