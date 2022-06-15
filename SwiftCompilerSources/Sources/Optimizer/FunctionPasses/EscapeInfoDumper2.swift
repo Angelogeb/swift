@@ -12,10 +12,10 @@
 
 import SIL
 
-class EIWVisitor : EscapeInfoWalkerVisitor {
+struct EIWVisitor : EscapeInfoWalkerVisitor {
   var results: Set<String> =  Set()
   
-  func visitUse(operand: Operand, path: Path, state: State) -> UseVisitResult {
+  mutating func visitUse(operand: Operand, path: Path, state: State) -> UseVisitResult {
     if operand.instruction is ReturnInst {
       results.insert("return[\(path)]")
       return .ignore
@@ -23,7 +23,7 @@ class EIWVisitor : EscapeInfoWalkerVisitor {
     return .continueWalk
   }
   
-  func visitDef(def: Value, path: Path, state: State) -> DefVisitResult {
+  mutating func visitDef(def: Value, path: Path, state: State) -> DefVisitResult {
     guard let arg = def as? FunctionArgument else {
       return .continueWalkUp
     }
@@ -42,16 +42,15 @@ let escapeInfoDumper2 = FunctionPass(name: "dump-escape-info2", {
   
   print("Escape information for \(function.name):")
   
-  let visitor = EIWVisitor()
-  var walker = EscapeInfoWalker(calleeAnalysis: context.calleeAnalysis)
+  var walker = EscapeInfoWalker(calleeAnalysis: context.calleeAnalysis, visitor: EIWVisitor())
   
   for block in function.blocks {
     for inst in block.instructions {
       if let allocRef = inst as? AllocRefInst {
         
-        visitor.results.removeAll(keepingCapacity: true)
-        let escapes = walker.isEscaping(object: allocRef, visitor: visitor)
-        let results = visitor.results
+        walker.visitor.results.removeAll(keepingCapacity: true)
+        let escapes = walker.isEscaping(object: allocRef)
+        let results = walker.visitor.results
         
         let res: String
         if escapes {
@@ -96,8 +95,6 @@ let addressEscapeInfoDumper2 = FunctionPass(name: "dump-addr-escape-info2", {
     }
   }
   
-  var escapeInfo = EscapeInfoWalker(calleeAnalysis: context.calleeAnalysis)
-  
   struct Visitor : EscapeInfoWalkerVisitor {
     let apply: Instruction
     mutating func visitUse(operand: Operand, path: Path, state: State) -> UseVisitResult {
@@ -118,11 +115,14 @@ let addressEscapeInfoDumper2 = FunctionPass(name: "dump-addr-escape-info2", {
     print("value:\(value)")
     for apply in applies {
       let path = AliasAnalysis.getPtrOrAddressPath(for: value)
-      let escaping = escapeInfo.isEscaping(addressesOf: value, path: path, visitor: Visitor(apply: apply))
+      
+      var escapeInfo = EscapeInfoWalker(calleeAnalysis: context.calleeAnalysis, visitor: Visitor(apply: apply))
+      let escaping = escapeInfo.isEscaping(addressesOf: value, path: path)
       print("  \(escaping ? "==>" : "-  ") \(apply)")
     }
   }
   
+  var EAA = EscapeAliasAnalysis(calleeAnalysis: context.calleeAnalysis)
   // test `canReferenceSameField` for each pair of `fix_lifetime`.
   if !valuesToCheck.isEmpty {
     for lhsIdx in 0..<(valuesToCheck.count - 1) {
@@ -132,7 +132,7 @@ let addressEscapeInfoDumper2 = FunctionPass(name: "dump-addr-escape-info2", {
         let rhs = valuesToCheck[rhsIdx]
         print(lhs)
         print(rhs)
-        if escapeInfo.canReferenceSameField(
+        if EAA.canReferenceSameField(
             lhs, path: AliasAnalysis.getPtrOrAddressPath(for: lhs),
             rhs, path: AliasAnalysis.getPtrOrAddressPath(for: rhs)) {
           print("may alias")

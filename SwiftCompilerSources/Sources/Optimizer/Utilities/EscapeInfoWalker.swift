@@ -13,7 +13,6 @@ enum UseVisitResult {
   case abort
 }
 
-
 struct EscapeInfoWalkerState {
   var followStores: Bool
   var knownType: Type?
@@ -47,6 +46,51 @@ extension EscapeInfoWalkerVisitor {
 struct DefaultEscapeInfoWalkerVisitor : EscapeInfoWalkerVisitor {}
 
 fileprivate let DEBUGWALK = true
+
+struct EscapeAliasAnalysis {
+  typealias Path = SmallProjectionPath
+  private var calleeAnalysis: CalleeAnalysis
+  init(calleeAnalysis: CalleeAnalysis) {
+    self.calleeAnalysis = calleeAnalysis
+  }
+  
+  /// Returns true if the selected address(es) of `lhs`/`lhsPath` can reference the same field as
+  /// the selected address(es) of `rhs`/`rhsPath`.
+  ///
+  /// Example:
+  ///   %1 = struct_element_addr %s, #field1    // true for (%1, %s)
+  ///   %2 = struct_element_addr %s, #field2    // true for (%2, %s), false for (%1,%2)
+  ///
+  mutating func canReferenceSameField(_ lhs: Value, path lhsPath: Path = Path(.anyValueFields),
+                                      _ rhs: Value, path rhsPath: Path = Path(.anyValueFields)) -> Bool {
+    
+    struct Visitor : EscapeInfoWalkerVisitor {
+      let target: Value
+      func visitUse(operand: Operand, path: Path, state: State) -> UseVisitResult {
+        // Note: since we are checking the value of an operand, we are ignoring address
+        // projections with no uses. This is no problem. It just requires a fix_lifetime for
+        // each address to test in alias-analysis test files.
+        if operand.value == target { return .abort }
+        if operand.instruction is ReturnInst { return .ignore }
+        return .continueWalk
+      }
+    }
+    
+    // lhs -> rhs will succeed (= return false) if lhs is a non-escaping "local" object,
+    // but not necessarily rhs.
+    var rhsEW = EscapeInfoWalker(calleeAnalysis: calleeAnalysis, visitor: Visitor(target: rhs))
+    if !rhsEW.isEscaping(addressesOf: lhs, path: lhsPath) {
+      return false
+    }
+    // The other way round: rhs -> lhs will succeed if rhs is a non-escaping "local" object,
+    // but not necessarily lhs.
+    var lhsEW = EscapeInfoWalker(calleeAnalysis: calleeAnalysis, visitor: Visitor(target: lhs))
+    if !lhsEW.isEscaping(addressesOf: rhs, path: rhsPath) {
+      return false
+    }
+    return true
+  }
+}
 
 /// A utility for checking if a value escapes and for finding the escape points.
 ///
@@ -106,19 +150,27 @@ fileprivate let DEBUGWALK = true
 /// the value, escapes.
 /// An exception are `isEscaping(address: Value)` and similar functions: they ignore
 /// values which are loaded from the address in question.
-struct EscapeInfoWalker : ValueDefUseWalker, AddressDefUseWalker, ValueUseDefWalker, AddressUseDefWalker {
+struct EscapeInfoWalker<V: EscapeInfoWalkerVisitor> {
   typealias State = EscapeInfoWalkerState
+  typealias Path = SmallProjectionPath
   
   //===--------------------------------------------------------------------===//
   //                           The top-level API
   //===--------------------------------------------------------------------===//
   
-  init(calleeAnalysis: CalleeAnalysis) {
-    self.calleeAnalysis = calleeAnalysis
-    self.visitor = DefaultEscapeInfoWalkerVisitor()
+  init(calleeAnalysis: CalleeAnalysis, visitor: V) {
+    self.impl = EscapeInfoWalkerImpl(calleeAnalysis: calleeAnalysis, visitor: visitor)
   }
-  
-  var visitor: EscapeInfoWalkerVisitor
+  private var impl: EscapeInfoWalkerImpl<V>
+  var visitor: V {
+    get {
+      return impl.visitor
+    }
+    
+    _modify {
+      yield &impl.visitor
+    }
+  }
   
   /// Returns true if `object`, or any sub-objects which are selected by `path`, can escape.
   ///
@@ -134,17 +186,16 @@ struct EscapeInfoWalker : ValueDefUseWalker, AddressDefUseWalker, ValueUseDefWal
   /// \endcode
   ///
   /// Trivial values are ignored, even if they are selected by `path`.
-  mutating func isEscaping(object: Value, path: Path = Path(),
-                           visitor: EscapeInfoWalkerVisitor = DefaultEscapeInfoWalkerVisitor()) -> Bool {
-    start(forAnalyzingAddresses: false, visitor: visitor)
-    defer { cleanup() }
+  mutating func isEscaping(object: Value, path: Path = Path()) -> Bool {
+    impl.start(forAnalyzingAddresses: false)
+    defer { impl.cleanup() }
     
     let state = State(followStores: false, knownType: nil)
-    if let (path, state) = shouldRecomputeUp(def: object, path: path, state: state) {
+    if let (path, state) = impl.shouldRecomputeUp(def: object, path: path, state: state) {
       if object.type.isAddress {
-        return walkUp(address: object, path: path, state: state)
+        return impl.walkUp(address: object, path: path, state: state)
       } else {
-        return walkUp(value: object, path: path, state: state)
+        return impl.walkUp(value: object, path: path, state: state)
       }
     }
     return false
@@ -153,12 +204,11 @@ struct EscapeInfoWalker : ValueDefUseWalker, AddressDefUseWalker, ValueUseDefWal
   /// Returns true if the definition of `value` is escaping.
   ///
   /// In contrast to `isEscaping`, this function starts with a walk-down instead of a walk-up from `value`.
-  mutating func isEscapingWhenWalkingDown(object: Value, path: SmallProjectionPath = SmallProjectionPath(),
-                                          visitor: EscapeInfoWalkerVisitor = DefaultEscapeInfoWalkerVisitor()) -> Bool {
-    start(forAnalyzingAddresses: false, visitor: visitor)
-    defer { cleanup() }
+  mutating func isEscapingWhenWalkingDown(object: Value, path: Path = Path()) -> Bool {
+    impl.start(forAnalyzingAddresses: false)
+    defer { impl.cleanup() }
     
-    return cachedWalkDown(def: object, path: path, state: State(followStores: false, knownType: nil))
+    return impl.cachedWalkDown(def: object, path: path, state: State(followStores: false, knownType: nil))
   }
   
   /// Returns true if any address of `value`, which is selected by `path`, can escape.
@@ -177,56 +227,34 @@ struct EscapeInfoWalker : ValueDefUseWalker, AddressDefUseWalker, ValueUseDefWal
   ///   not the value stored at the address.
   /// * Addresses with trivial types are _not_ ignored.
   mutating
-  func isEscaping(addressesOf value: Value, path: SmallProjectionPath = SmallProjectionPath(.anyValueFields),
-                  visitor: EscapeInfoWalkerVisitor = DefaultEscapeInfoWalkerVisitor()) -> Bool {
-    start(forAnalyzingAddresses: true, visitor: visitor)
-    defer { cleanup() }
+  func isEscaping(addressesOf value: Value, path: Path = Path(.anyValueFields)) -> Bool {
+    impl.start(forAnalyzingAddresses: true)
+    defer { impl.cleanup() }
     
     let state = State(followStores: false, knownType: nil)
-    if let (path, state) = shouldRecomputeUp(def: value, path: path, state: state) {
+    if let (path, state) = impl.shouldRecomputeUp(def: value, path: path, state: state) {
       if value.type.isAddress {
-        return walkUp(address: value, path: path, state: state)
+        return impl.walkUp(address: value, path: path, state: state)
       } else {
-        return walkUp(value: value, path: path, state: state)
+        return impl.walkUp(value: value, path: path, state: state)
       }
     }
     return false
   }
+}
+
+
+fileprivate struct EscapeInfoWalkerImpl<V: EscapeInfoWalkerVisitor> : ValueDefUseWalker,
+                                                                      AddressDefUseWalker,
+                                                                      ValueUseDefWalker,
+                                                                      AddressUseDefWalker {
+  typealias State = EscapeInfoWalkerState
   
-  /// Returns true if the selected address(es) of `lhs`/`lhsPath` can reference the same field as
-  /// the selected address(es) of `rhs`/`rhsPath`.
-  ///
-  /// Example:
-  ///   %1 = struct_element_addr %s, #field1    // true for (%1, %s)
-  ///   %2 = struct_element_addr %s, #field2    // true for (%2, %s), false for (%1,%2)
-  ///
-  mutating func canReferenceSameField(_ lhs: Value, path lhsPath: Path = Path(.anyValueFields),
-                                      _ rhs: Value, path rhsPath: Path = Path(.anyValueFields)) -> Bool {
-    
-    struct Visitor : EscapeInfoWalkerVisitor {
-      let target: Value
-      func visitUse(operand: Operand, path: Path, state: State) -> UseVisitResult {
-        // Note: since we are checking the value of an operand, we are ignoring address
-        // projections with no uses. This is no problem. It just requires a fix_lifetime for
-        // each address to test in alias-analysis test files.
-        if operand.value == target { return .abort }
-        if operand.instruction is ReturnInst { return .ignore }
-        return .continueWalk
-      }
-    }
-    
-    // lhs -> rhs will succeed (= return false) if lhs is a non-escaping "local" object,
-    // but not necessarily rhs.
-    if !isEscaping(addressesOf: lhs, path: lhsPath, visitor: Visitor(target: rhs)) {
-      return false
-    }
-    // The other way round: rhs -> lhs will succeed if rhs is a non-escaping "local" object,
-    // but not necessarily lhs.
-    if !isEscaping(addressesOf: rhs, path: rhsPath, visitor: Visitor(target: lhs)) {
-      return false
-    }
-    return true
+  init(calleeAnalysis: CalleeAnalysis, visitor: V) {
+    self.calleeAnalysis = calleeAnalysis
+    self.visitor = visitor
   }
+  var visitor: V
   
   mutating func walkDown(value: Operand, path: Path, state: State) -> Bool {
     if hasRelevantType(value.value, at: path) {
@@ -600,16 +628,14 @@ struct EscapeInfoWalker : ValueDefUseWalker, AddressDefUseWalker, ValueUseDefWal
   //                          private utility functions
   //===--------------------------------------------------------------------===//
 
-  private mutating func start(forAnalyzingAddresses: Bool, visitor: EscapeInfoWalkerVisitor) {
+  mutating func start(forAnalyzingAddresses: Bool) {
     precondition(walkedDownCache.isEmpty && walkedUpCache.isEmpty)
-    self.visitor = visitor
     analyzeAddresses = forAnalyzingAddresses
   }
 
-  private mutating func cleanup() {
+  mutating func cleanup() {
     walkedDownCache.removeAll(keepingCapacity: true)
     walkedUpCache.removeAll(keepingCapacity: true)
-    self.visitor = DefaultEscapeInfoWalkerVisitor()
   }
   
   /// Returns true if the type of `value` at `path` is relevant and should be tracked.
