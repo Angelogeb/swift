@@ -162,6 +162,7 @@ struct EscapeInfoWalker<V: EscapeInfoWalkerVisitor> {
     self.impl = EscapeInfoWalkerImpl(calleeAnalysis: calleeAnalysis, visitor: visitor)
   }
   private var impl: EscapeInfoWalkerImpl<V>
+  
   var visitor: V {
     get {
       return impl.visitor
@@ -786,7 +787,6 @@ fileprivate struct EscapeInfoWalkerImpl<V: EscapeInfoWalkerVisitor> : ValueDefUs
           
           let state = (exclusive ? state : state.with(knownType: nil)).with(followStores: false)
           
-          // TODO: doublecheck that only values can be returned
           if walkDownUses(value: result, path: to.pathPattern, state: state) {
             return isEscaping
           }
