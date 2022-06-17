@@ -19,4 +19,5 @@ swift_compiler_sources(Optimizer
   ReleaseDevirtualizer.swift
   RunUnitTests.swift
   StackPromotion.swift
+  StackPromotion2.swift
 )
