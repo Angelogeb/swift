@@ -12,12 +12,6 @@
 
 import SIL
 
-protocol UseDefWalkerBase {
-  typealias Path = SmallProjectionPath
-  associatedtype State
-  
-  mutating func shouldRecomputeUp(def: Value, path: Path, state: State) -> (Path, State)?
-}
 
 /// - A `DefUseWalker` finds all uses of a target value.
 ///
@@ -46,27 +40,6 @@ protocol UseDefWalkerBase {
 ///
 /// There are two types of `DefUseWalker`s which differ in the type of parent values
 /// they handle.
-protocol DefUseWalkerBase {
-  typealias Path = SmallProjectionPath
-  associatedtype State
-  
-  ///   This method is called for two cases:
-  ///   1. To avoid exponential complexity during a walk down with a wildcard path `v**` or `**`
-  ///     ```
-  ///     (%1, %2, %3, %4) = destructure_tuple %t1
-  ///     %t2 = tuple (%1, %2, %3, %4)
-  ///     (%5, %6, %7, %8) = destructure_tuple %t2
-  ///     %t3 = tuple (%5, %6, %7, %8)
-  ///     ```
-  ///   2. To handle "phi webs" of `br` instructions which would lead to an infinite
-  ///     walk down. In this case the implementor must ensure that eventually
-  ///     `shouldRecomputeDown` returns `nil`, i.e. a fixpoint has been reached.
-  ///     - If the implementor doesn't need for the walk to cross phi webs,
-  ///       it can intercept `BranchInst`/`CondBranchInst` in `walkDown` and
-  ///       not call `walkDownDefault` for these cases.
-  ///     - Phi webs arise only for "value" parents.
-  mutating func shouldRecomputeDown(def: Value, path: Path, state: State) -> (Path, State)?
-}
 
 
 /// A `ValueDefUseWalker` can only handle "value" parents, which correspond
@@ -88,7 +61,10 @@ protocol DefUseWalkerBase {
 /// ...    = <instruction>  %fa.ga:               // 4. unknown instruction, leafUse(%fa.ga, "")
 /// ...    = <instruction>  %str:                 // 6. unknown instruction, leafUse(%str, "s0.s1")
 /// ```
-protocol ValueDefUseWalker : DefUseWalkerBase {
+protocol ValueDefUseWalker {
+  typealias Path = SmallProjectionPath
+  associatedtype State
+  
   /// Called on each use. The implementor can decide to continue the walk by calling
   /// `walkDownDefault(value: value, path: path, state: state)` or
   /// do nothing.
@@ -231,8 +207,6 @@ extension ValueDefUseWalker {
 /// can't proceed.
 /// All functions return a boolean flag which, if true, can stop the walk of the other uses
 /// and the whole walk.
-/// Address walkers don't require \*WalkerBase because no branching of the traversal
-/// or phi webs arise.
 protocol AddressDefUseWalker {
   typealias Path = SmallProjectionPath
   associatedtype State
@@ -338,7 +312,10 @@ extension AddressDefUseWalker {
 ///   with the operand definition as initial value and same path.
 /// 4. If the instruction is not handled by this walker or the path is empty, then `rootDef` is called to
 ///   denote that the walk can't continue and that the definition of the target has been reached.
-protocol ValueUseDefWalker : UseDefWalkerBase {
+protocol ValueUseDefWalker {
+  typealias Path = SmallProjectionPath
+  associatedtype State
+  
   /// Starting point of the walk. The implementor can decide to continue the walk by calling
   /// `walkUpDefault(value: value, path: path, state: state)` or
   /// do nothing.
@@ -353,6 +330,8 @@ protocol ValueUseDefWalker : UseDefWalkerBase {
   /// `unmatchedPath` is called from `walkUpDefault` when the defining instruction
   /// is unrelated to the `path` the walk should follow.
   mutating func unmatchedPath(value: Value, path: Path, state: State) -> Bool
+  
+  mutating func shouldRecomputeUp(def: Value, path: Path, state: State) -> (Path, State)?
 }
 
 extension ValueUseDefWalker {
