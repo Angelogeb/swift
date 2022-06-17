@@ -15,39 +15,44 @@ import SIL
 
 /// - A `DefUseWalker` finds all uses of a target value.
 ///
-/// - A target value is described by a "parent" value and a projection path.
-///   1. If the projection path is empty (`""`) then the target value is the parent value itself.
+/// - A target value is described by a "base" value and a projection path.
+///   1. If the projection path is empty (`""`) then the target value is the base value itself.
 ///   2. If the projection path is non-empty (`"s0.1.e3"`), then the target value is the one
-///     reachable from the parent through the series of projections described by the path.
-/// - A path can also contain wildcards such as `"v**"` which means any series of "value"
+///     reachable from the base through the series of projections described by the path.
+/// - A path can also contain a pattern such as `"v**"` which means any series of "value"
 ///   projections (excluding `ref_element_addr` and similar, i.e. `c*`) from any field.
-///   In this case, the target value*s* are many, i.e. all the ones reachable from
-///   the parent through any of the fields with any number of value projections.
+///   In the `v**` case, the target value*s* are many, i.e. all the ones reachable from
+///   the base through _any of the fields_ through _any number_ of value projections.
+///   `c*` means values reachable through a _single_ projection of _any_ of the fields of the class.
 ///
-/// - A walk is started with a call to `walkDownUses(parent, path: path, state: state)`.
+/// - A walk is started with a call to `walkDownUses(base, path: path, state: state)`.
 /// - This function will call `walkDown(operand, path: path, state: state)`
-///   for every use of `parent` as `operand` in an instruction.
-/// - For each use, then the walk can continue if the result of the using instruction might
-///   still reach the target value with a new projection path.
-///   If the use is a construction such as a
-///   `%res = struct $S (%f0)` (or `%res = tuple (%unk, %1)`) instruction and the path is `p`
-///   then the `%res` result value reaches the target value through the new projection`s0.p` (respectively `1.p`).
-///   If the use is a projection such as `%res = struct_extract %s : $S, #S.field0` and the
-///   path is `s0.s1` then the target value is reachable from `%res` with path `s1`.
+///   for every use of `base` as `operand` in an instruction.
+/// - For each use, then the walk can continue with base the result if the result of the using
+///   instruction might still reach the target value with a new projection path.
+///   1. If the use is a construction such as a
+///     `%res = struct $S (%f0)` (or `%res = tuple (%unk, %1)`) instruction and the path is `p`
+///     then the `%res` result value reaches the target value through the new projection`s0.p` (respectively `1.p`).
+///   2.  If the use is a projection such as `%res = struct_extract %s : $S, #S.field0` and the
+///     path is `s0.s1` then the target value is reachable from `%res` with path `s1`.
+///     If the path doesn't match `unmatchedPath` is called.
+///   3. If the use is a "forwarding instruction", such as a cast, the walk continues with the same path.
+///   4. If the use is an unhandled instruction then `leafUse` is called to denote that the client has to
+///     handle this use.
 ///
 /// - `State` can be defined by the implementor to track specific state of a "branch"
 ///   of the walk, i.e. whether a certain instruction was crossed while walking towards _this use_ of the target.
 ///
-/// There are two types of `DefUseWalker`s which differ in the type of parent values
-/// they handle.
+/// There are two types of DefUseWalkers, one for values (`ValueDefUseWalker`) and one for
+/// addresses (`AddressDefUseWalker`)
 
 
-/// A `ValueDefUseWalker` can only handle "value" parents, which correspond
+/// A `ValueDefUseWalker` can only handle "value" bases, which correspond
 /// to types that are not addresses, i.e. _do not have_ an asterisk (`*`) in the textual
 /// representation of their SIL type (`$T`).
 /// These can be values of reference type, or struct/tuple etc.
-/// A `ValueDefUseWalker.walkDownDefault` called on a use of a "value" parent which
-/// yields an "address" value (such as `ref_element_addr %value_parent`) will call `leafUse`
+/// A `ValueDefUseWalker.walkDownDefault` called on a use of a "value" base which
+/// yields an "address" value (such as `ref_element_addr %value_base`) will call `leafUse`
 /// since the walk can't proceed.
 /// **All functions return a boolean flag which, if true, can stop the walk of the other uses
 /// and the whole walk.**
@@ -73,14 +78,36 @@ protocol ValueDefUseWalker {
   /// `leafUse` is called from `walkDownDefault` when the walk can't continue for this use since
   /// either
   /// * this is an instruction unknown to the default walker which _might_ be a "transitive use"
-  ///   of the target value (such as `destroy_value %parent` or a `builtin ... %parent` instruction)
+  ///   of the target value (such as `destroy_value %base` or a `builtin ... %base` instruction)
   /// * the `path` is empty (`""`) and therefore this is a "direct use" of the target value.
   mutating func leafUse(value: Operand, path: Path, state: State) -> Bool
   
   /// `unmatchedPath` is called from `walkDownDefault` when this is a use
-  /// of the parent value and that the result is unrelated (does not match) with the target
+  /// of the base value and that the result is unrelated (does not match) with the target
   /// denoted by `path`.
   mutating func unmatchedPath(value: Operand, path: Path, state: State) -> Bool
+
+  /// A client must implement this function to cache walking results.
+  /// The function returns nil if the walk doesn't need to continue because
+  /// the `def` was already handled before.
+  /// In case the walk needs to be continued, this function returns the path and state for continuing the walk.
+  ///
+  /// This method is called for two cases:
+  /// 1. To avoid exponential complexity during a walk down with a wildcard path `v**` or `**`
+  ///   ```
+  ///   (%1, %2, %3, %4) = destructure_tuple %t1
+  ///   %t2 = tuple (%1, %2, %3, %4)
+  ///   (%5, %6, %7, %8) = destructure_tuple %t2
+  ///   %t3 = tuple (%5, %6, %7, %8)
+  ///   ```
+  /// 2. To handle "phi webs" of `br` instructions which would lead to an infinite
+  ///   walk down. In this case the implementor must ensure that eventually
+  ///   `shouldRecomputeDown` returns `nil`, i.e. a fixpoint has been reached.
+  ///   - If the implementor doesn't need for the walk to cross phi webs,
+  ///     it can intercept `BranchInst`/`CondBranchInst` in `walkDown` and
+  ///     not call `walkDownDefault` for these cases.
+  ///   - Phi webs arise only for "value" bases.
+  mutating func shouldRecomputeDown(def: Value, path: Path, state: State) -> (Path, State)?
 }
 
 extension ValueDefUseWalker {
@@ -200,10 +227,10 @@ extension ValueDefUseWalker {
   }
 }
 
-/// An `AddressDefUseWalker` can only handle "address" parents, which correspond
+/// An `AddressDefUseWalker` can only handle "address" bases, which correspond
 /// to types that are addresses (`$*T`).
-/// An `AddressDefUseWalker.walkDownDefault` called on a use of an "address" parent
-/// which results in a "value" (such as `load %addr_parent`) will call `leafUse` since the walk
+/// An `AddressDefUseWalker.walkDownDefault` called on a use of an "address" base
+/// which results in a "value" (such as `load %addr_base`) will call `leafUse` since the walk
 /// can't proceed.
 /// All functions return a boolean flag which, if true, can stop the walk of the other uses
 /// and the whole walk.
@@ -219,12 +246,12 @@ protocol AddressDefUseWalker {
   /// `leafUse` is called from `walkDownDefault` when the walk can't continue for this use since
   /// either
   /// * this is an instruction unknown to the default walker which might be a "transitive use"
-  ///   of the target value (such as `destroy_addr %parent` or a `builtin ... %parent` instruction)
+  ///   of the target value (such as `destroy_addr %base` or a `builtin ... %base` instruction)
   /// * the `path` is empty (`""`) and therefore this is a "direct use" of the target value.
   mutating func leafUse(address: Operand, path: Path, state: State) -> Bool
   
   /// `unmatchedPath` is called from `walkDownDefault` when this is a use
-  /// of the parent value and that the result is unrelated (does not match) with the target
+  /// of the base value and that the result is unrelated (does not match) with the target
   /// denoted by `path`.
   mutating func unmatchedPath(address: Operand, path: Path, state: State) -> Bool
 }
@@ -288,30 +315,30 @@ extension AddressDefUseWalker {
 
 /// - A `UseDefWalker` can be used to find all "generating" definitions of
 ///   a target value.
-/// - A target value is described by a "parent" value and a projection path as in a `DefUseWalker.`
-///   1. If the projection path is empty (`""`) then the target value is the parent value itself.
+/// - A target value is described by a "base" value and a projection path as in a `DefUseWalker.`
+///   1. If the projection path is empty (`""`) then the target value is the base value itself.
 ///   2. If the projection path is non-empty (`"s0.1.e3"`), then the target value is the one
-///     reachable through the series of projections described by the path, applied to the parent.
-///   The same notes about wildcard paths in `DefUseWalker` apply here.
+///     reachable through the series of projections described by the path, applied to the base.
+/// - The same notes about wildcard paths in `DefUseWalker` apply here.
 ///
-/// - A walk is started with a call to `walkUp(parent, path: path, state: state)`.
+/// - A walk is started with a call to `walkUp(base, path: path, state: state)`.
 ///
-/// The implementor of `walkUp` can then track the definition if needed and
-/// continue the walk by calling `walkUpDefault`.
-/// `walkUpDefault` will do the following:
-/// 1. If the instruction of the definition is a projection, then it will continue
-///   the walk by calling `walkUp` on the operand definition and an adjusted (pushed) path
-///   to reflect that a further projection is needed to reach the value of interest from the new initial value.
-/// 2. If the instruction of the definition is a value construction such as `struct` and
-///   the head of the path matches the instruction type then the walk continues
-///   with a call to `walkUp` with initial value the operand defintion denoted by the path
-///   and the suffix path as path since the target value can now be reached with fewer projections.
-///   If the defining instruction of the value does not match the head of the path as in
-///   `%t = tuple ...` and `"s0.t1"` then `unmatchedPath(%t, ...)` is called.
-/// 3. If the instruction is a forwarding instruction, such as a cast, the walk continues with `walkUp`
-///   with the operand definition as initial value and same path.
-/// 4. If the instruction is not handled by this walker or the path is empty, then `rootDef` is called to
-///   denote that the walk can't continue and that the definition of the target has been reached.
+/// - The implementor of `walkUp` can then track the definition if needed and
+///   continue the walk by calling `walkUpDefault`.
+///   `walkUpDefault` will do the following:
+///   1. If the instruction of the definition is a projection, then it will continue
+///     the walk by calling `walkUp` on the operand definition and an adjusted (pushed) path
+///     to reflect that a further projection is needed to reach the value of interest from the new initial value.
+///   2. If the instruction of the definition is a value construction such as `struct` and
+///     the head of the path matches the instruction type then the walk continues
+///     with a call to `walkUp` with initial value the operand defintion denoted by the path
+///     and the suffix path as path since the target value can now be reached with fewer projections.
+///     If the defining instruction of the value does not match the head of the path as in
+///     `%t = tuple ...` and `"s0.t1"` then `unmatchedPath(%t, ...)` is called.
+///   3. If the instruction is a forwarding instruction, such as a cast, the walk continues with `walkUp`
+///     with the operand definition as initial value and same path.
+///   4. If the instruction is not handled by this walker or the path is empty, then `rootDef` is called to
+///     denote that the walk can't continue and that the definition of the target has been reached.
 protocol ValueUseDefWalker {
   typealias Path = SmallProjectionPath
   associatedtype State
@@ -331,6 +358,11 @@ protocol ValueUseDefWalker {
   /// is unrelated to the `path` the walk should follow.
   mutating func unmatchedPath(value: Value, path: Path, state: State) -> Bool
   
+  /// A client must implement this function to cache walking results.
+  /// The function returns nil if the walk doesn't need to continue because
+  /// the `def` was already handled before.
+  /// In case the walk needs to be continued, this function returns the path
+  /// and state for continuing the walk.
   mutating func shouldRecomputeUp(def: Value, path: Path, state: State) -> (Path, State)?
 }
 
