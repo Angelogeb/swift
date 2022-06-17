@@ -193,11 +193,7 @@ struct EscapeInfoWalker<V: EscapeInfoWalkerVisitor> {
     
     let state = State(followStores: false, knownType: nil)
     if let (path, state) = impl.shouldRecomputeUp(def: object, path: path, state: state) {
-      if object.type.isAddress {
-        return impl.walkUp(address: object, path: path, state: state)
-      } else {
-        return impl.walkUp(value: object, path: path, state: state)
-      }
+      return impl.walkUp(addressOrValue: object, path: path, state: state)
     }
     return false
   }
@@ -234,11 +230,7 @@ struct EscapeInfoWalker<V: EscapeInfoWalkerVisitor> {
     
     let state = State(followStores: false, knownType: nil)
     if let (path, state) = impl.shouldRecomputeUp(def: value, path: path, state: state) {
-      if value.type.isAddress {
-        return impl.walkUp(address: value, path: path, state: state)
-      } else {
-        return impl.walkUp(value: value, path: path, state: state)
-      }
+      return impl.walkUp(addressOrValue: value, path: path, state: state)
     }
     return false
   }
@@ -460,6 +452,14 @@ fileprivate struct EscapeInfoWalkerImpl<V: EscapeInfoWalkerVisitor> : ValueDefUs
       }
     } else {
       return false
+    }
+  }
+  
+  mutating func walkUp(addressOrValue: Value, path: Path, state: State) -> Bool {
+    if addressOrValue.type.isAddress {
+      return walkUp(address: addressOrValue, path: path, state: state)
+    } else {
+      return walkUp(value: addressOrValue, path: path, state: state)
     }
   }
   
@@ -799,14 +799,7 @@ fileprivate struct EscapeInfoWalkerImpl<V: EscapeInfoWalkerVisitor> : ValueDefUs
           let arg = apply.arguments[callerToIdx]
           
           let state = state.with(knownType: nil).with(followStores: false)
-          let walkResult: Bool
-          
-          if arg.type.isAddress {
-            walkResult = walkUp(address: arg, path: to.pathPattern, state: state)
-          } else {
-            walkResult = walkUp(value: arg, path: to.pathPattern, state: state)
-          }
-          if walkResult {
+          if walkUp(addressOrValue: arg, path: to.pathPattern, state: state) {
             return true
           }
         }
@@ -822,16 +815,9 @@ fileprivate struct EscapeInfoWalkerImpl<V: EscapeInfoWalkerVisitor> : ValueDefUs
         matched = true
         
         let arg = apply.arguments[callerArgIdx]
-        
         let state = state.with(followStores: false).with(knownType: nil)
-        
-        let walkResult: Bool
-        if arg.type.isAddress {
-          walkResult = walkUp(address: arg, path: effect.selectedArg.pathPattern, state: state)
-        } else {
-          walkResult = walkUp(value: arg, path: effect.selectedArg.pathPattern, state: state)
-        }
-        if walkResult {
+
+        if walkUp(addressOrValue: arg, path: effect.selectedArg.pathPattern, state: state) {
           return true
         }
         continue
@@ -863,15 +849,7 @@ fileprivate struct EscapeInfoWalkerImpl<V: EscapeInfoWalkerVisitor> : ValueDefUs
             
             // TODO: followStores?
             
-            let walkResult: Bool
-            if arg.type.isAddress {
-              walkResult = walkUp(address: arg, path: effect.selectedArg.pathPattern,
-                                  state: state.with(knownType: nil))
-            } else {
-              walkResult = walkUp(value: arg, path: effect.selectedArg.pathPattern,
-                                  state: state.with(knownType: nil))
-            }
-            if walkResult {
+            if walkUp(addressOrValue: arg, path: effect.selectedArg.pathPattern, state: state.with(knownType: nil)) {
               return true
             }
           }
