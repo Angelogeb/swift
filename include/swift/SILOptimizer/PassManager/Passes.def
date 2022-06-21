@@ -226,15 +226,9 @@ PASS(EscapeAnalysisDumper, "escapes-dump",
      "Dump Escape Analysis Results")
 SWIFT_FUNCTION_PASS(EscapeInfoDumper, "dump-escape-info",
      "Dumps escape information")
-SWIFT_FUNCTION_PASS(EscapeInfoDumper2, "dump-escape-info2",
-     "Dumps walk information")
 SWIFT_FUNCTION_PASS(AddressEscapeInfoDumper, "dump-addr-escape-info",
      "Dumps address escape information")
-SWIFT_FUNCTION_PASS(AddressEscapeInfoDumper2, "dump-addr-escape-info2",
-     "Dumps address escape information")
 SWIFT_FUNCTION_PASS(ComputeEffects, "compute-effects",
-     "Computes function effects")
-SWIFT_FUNCTION_PASS(ComputeEffects2, "compute-effects2",
      "Computes function effects")
 PASS(FlowIsolation, "flow-isolation",
      "Enforces flow-sensitive actor isolation rules")
@@ -407,8 +401,6 @@ PASS(SplitAllCriticalEdges, "split-critical-edges",
 PASS(SplitNonCondBrCriticalEdges, "split-non-cond_br-critical-edges",
      "Split all Critical Edges not from SIL cond_br")
 SWIFT_FUNCTION_PASS(StackPromotion, "stack-promotion",
-     "Stack Promotion of Class Objects")
-SWIFT_FUNCTION_PASS(StackPromotion2, "stack-promotion2",
      "Stack Promotion of Class Objects")
 PASS(StripDebugInfo, "strip-debug-info",
      "Strip Debug Information")
