@@ -126,38 +126,38 @@ extension ValueDefUseWalker {
     let instruction = operand.instruction
     switch instruction {
     case let str as StructInst:
-      return walkDownUses(value: str,
+      return walkDownUses(ofValue: str,
                       path: path.push(.structField, index: operand.index),
                       state: state)
     case let t as TupleInst:
-      return walkDownUses(value: t,
+      return walkDownUses(ofValue: t,
                       path: path.push(.tupleField, index: operand.index),
                       state: state)
     case let e as EnumInst:
-      return walkDownUses(value: e,
+      return walkDownUses(ofValue: e,
                           path: path.push(.enumCase, index: e.caseIndex),
                           state: state)
     case let se as StructExtractInst:
       if let path = path.popIfMatches(.structField, index: se.fieldIndex) {
-        return walkDownUses(value: se, path: path, state: state)
+        return walkDownUses(ofValue: se, path: path, state: state)
       } else {
         return leafOrUnmatched(value: operand, path: path, state: state)
       }
     case let te as TupleExtractInst:
       if let path = path.popIfMatches(.tupleField, index: te.fieldIndex) {
-        return walkDownUses(value: te, path: path, state: state)
+        return walkDownUses(ofValue: te, path: path, state: state)
       } else {
         return leafOrUnmatched(value: operand, path: path, state: state)
       }
     case let ued as UncheckedEnumDataInst:
       if let path = path.popIfMatches(.enumCase, index: ued.caseIndex) {
-        return walkDownUses(value: ued, path: path, state: state)
+        return walkDownUses(ofValue: ued, path: path, state: state)
       } else {
         return leafOrUnmatched(value: operand, path: path, state: state)
       }
     case let ds as DestructureStructInst:
       if let (index, path) = path.pop(kind: .structField) {
-        return walkDownUses(value: ds.results[index], path: path, state: state)
+        return walkDownUses(ofValue: ds.results[index], path: path, state: state)
       } else if path.topMatchesAnyValueField {
         return walkDownUses(resultsOf: ds, path: path, state: state)
       } else {
@@ -165,7 +165,7 @@ extension ValueDefUseWalker {
       }
     case let dt as DestructureTupleInst:
       if let (index, path) = path.pop(kind: .tupleField) {
-        return walkDownUses(value: dt.results[index], path: path, state: state)
+        return walkDownUses(ofValue: dt.results[index], path: path, state: state)
       } else if path.topMatchesAnyValueField {
         return walkDownUses(resultsOf: dt, path: path, state: state)
       } else {
@@ -175,34 +175,34 @@ extension ValueDefUseWalker {
       is BeginBorrowInst, is CopyValueInst,
       is UpcastInst, is UncheckedRefCastInst, is EndCOWMutationInst,
       is RefToBridgeObjectInst, is BridgeObjectToRefInst:
-      return walkDownUses(value: (instruction as! SingleValueInstruction), path: path, state: state)
+      return walkDownUses(ofValue: (instruction as! SingleValueInstruction), path: path, state: state)
     case is MarkDependenceInst:
       assert(operand.index == 1)
       return unmatchedPath(value: operand, path: path, state: state)
     case let br as BranchInst:
       let val = br.getArgument(for: operand)
       if let (path, state) = shouldRecomputeDown(def: val, path: path, state: state) {
-        return walkDownUses(value: val, path: path, state: state)
+        return walkDownUses(ofValue: val, path: path, state: state)
       } else {
         return false
       }
     case let cbr as CondBranchInst:
       let val = cbr.getArgument(for: operand)
       if let (path, state) = shouldRecomputeDown(def: val, path: path, state: state) {
-        return walkDownUses(value: val, path: path, state: state)
+        return walkDownUses(ofValue: val, path: path, state: state)
       } else {
         return false
       }
     case let bcm as BeginCOWMutationInst:
-      return walkDownUses(value: bcm.bufferResult, path: path, state: state)
+      return walkDownUses(ofValue: bcm.bufferResult, path: path, state: state)
     default:
       return leafUse(value: operand, path: path, state: state)
     }
   }
   
   /// Starts the walk
-  mutating func walkDownUses(value: Value, path: Path, state: State) -> Bool {
-    for operand in value.uses where !operand.isTypeDependent {
+  mutating func walkDownUses(ofValue: Value, path: Path, state: State) -> Bool {
+    for operand in ofValue.uses where !operand.isTypeDependent {
       if walkDown(value: operand, path: path, state: state) {
         return true
       }
@@ -213,7 +213,7 @@ extension ValueDefUseWalker {
   mutating func walkDownUses(resultsOf value: MultipleValueInstruction, path: Path, state: State) -> Bool {
     for result in value.results {
       if let (path, state) = shouldRecomputeDown(def: result, path: path, state: state) {
-        if walkDownUses(value: result, path: path, state: state) {
+        if walkDownUses(ofValue: result, path: path, state: state) {
           return true
         }
       }
@@ -270,36 +270,36 @@ extension AddressDefUseWalker {
     switch instruction {
     case let sea as StructElementAddrInst:
       if let path = path.popIfMatches(.structField, index: sea.fieldIndex) {
-        return walkDownUses(address: sea, path: path, state: state)
+        return walkDownUses(ofAddress: sea, path: path, state: state)
       } else {
         return leafOrUnmatched(address: operand, path: path, state: state)
       }
     case let tea as TupleElementAddrInst:
       if let path = path.popIfMatches(.tupleField, index: tea.fieldIndex) {
-        return walkDownUses(address: tea, path: path, state: state)
+        return walkDownUses(ofAddress: tea, path: path, state: state)
       } else {
         return leafOrUnmatched(address: operand, path: path, state: state)
       }
     case is InitEnumDataAddrInst, is UncheckedTakeEnumDataAddrInst:
       let ei = instruction as! SingleValueInstruction
       if let path = path.popIfMatches(.enumCase, index: (instruction as! EnumInstruction).caseIndex) {
-        return walkDownUses(address: ei, path: path, state: state)
+        return walkDownUses(ofAddress: ei, path: path, state: state)
       } else {
         return leafOrUnmatched(address: operand, path: path, state: state)
       }
     case is InitExistentialAddrInst, is OpenExistentialAddrInst, is BeginAccessInst,
       is IndexAddrInst:
-      return walkDownUses(address: instruction as! SingleValueInstruction, path: path, state: state)
+      return walkDownUses(ofAddress: instruction as! SingleValueInstruction, path: path, state: state)
     case let mdi as MarkDependenceInst:
       assert(operand.index == 0)
-      return walkDownUses(address: mdi, path: path, state: state)
+      return walkDownUses(ofAddress: mdi, path: path, state: state)
     default:
       return leafUse(address: operand, path: path, state: state)
     }
   }
   
-  mutating func walkDownUses(address: Value, path: Path, state: State) -> Bool {
-    for operand in address.uses where !operand.isTypeDependent {
+  mutating func walkDownUses(ofAddress: Value, path: Path, state: State) -> Bool {
+    for operand in ofAddress.uses where !operand.isTypeDependent {
       if walkDown(address: operand, path: path, state: state) {
         return true
       }

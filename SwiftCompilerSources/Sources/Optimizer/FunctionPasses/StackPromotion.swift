@@ -77,8 +77,8 @@ func tryPromoteAlloc(_ allocRef: AllocRefInstBase,
   if allocRef.isObjC || allocRef.canAllocOnStack {
     return false
   }
-  struct DefaultVisitor : EscapeInfoWalkerVisitor {}
-  var ei = EscapeInfoWalker(calleeAnalysis: context.calleeAnalysis, visitor: DefaultVisitor())
+  struct DefaultVisitor : EscapeInfoVisitor {}
+  var ei = EscapeInfo(calleeAnalysis: context.calleeAnalysis, visitor: DefaultVisitor())
   
   // The most important check: does the object escape the current function?
   if ei.isEscaping(object:allocRef) {
@@ -124,7 +124,7 @@ func tryPromoteAlloc(_ allocRef: AllocRefInstBase,
   
   // The "inner" liferange contains all use points which are dominated by the allocation block
   // The "outer" liferange contains all use points.
-  var (innerRange, outerBlockRange) = InnerAndOuterLiferanges.of(instruction: allocRef, in: outerDominatingBlock, domTree: domTree, context: context)
+  var (innerRange, outerBlockRange) = computeInnerAndOuterLiferanges(instruction: allocRef, in: outerDominatingBlock, domTree: domTree, context: context)
   defer { innerRange.deinitialize(); outerBlockRange.deinitialize() }
   
   precondition(innerRange.blockRange.isValid, "inner range should be valid because we did a dominance check")
@@ -198,10 +198,10 @@ func tryPromoteAlloc(_ allocRef: AllocRefInstBase,
 private func getDominatingBlockOfAllUsePoints(context: PassContext,
                                               _ value: SingleValueInstruction,
                                               domTree: DominatorTree) -> BasicBlock {
-  struct Visitor : EscapeInfoWalkerVisitor {
+  struct Visitor : EscapeInfoVisitor {
     var dominatingBlock: BasicBlock
     let domTree: DominatorTree
-    mutating func visitUse(operand: Operand, path: Path, state: State) -> UseVisitResult {
+    mutating func visitUse(operand: Operand, path: Path, state: State) -> UseResult {
       let defBlock = operand.value.definingBlock
       if defBlock.dominates(dominatingBlock, domTree) {
         dominatingBlock = defBlock
@@ -210,16 +210,18 @@ private func getDominatingBlockOfAllUsePoints(context: PassContext,
     }
   }
   
-  var walker = EscapeInfoWalker(calleeAnalysis: context.calleeAnalysis, visitor: Visitor(dominatingBlock: value.block, domTree: domTree))
+  var walker = EscapeInfo(calleeAnalysis: context.calleeAnalysis, visitor: Visitor(dominatingBlock: value.block, domTree: domTree))
   _ = walker.isEscaping(object: value)
   return walker.visitor.dominatingBlock
 }
 
-struct InnerAndOuterLiferanges {
+
+func computeInnerAndOuterLiferanges(instruction: SingleValueInstruction, in domBlock: BasicBlock, domTree: DominatorTree, context: PassContext) -> (InstructionRange, BasicBlockRange) {
+  
   /// All uses which are dominated by the `innerInstRange`s begin-block are included
   /// in both, the `innerInstRange` and the `outerBlockRange`.
   /// All _not_ dominated uses are only included in the `outerBlockRange`.
-  private struct Visitor : EscapeInfoWalkerVisitor {
+  struct Visitor : EscapeInfoVisitor {
     var innerRange: InstructionRange
     var outerBlockRange: BasicBlockRange
     let domTree: DominatorTree
@@ -230,7 +232,7 @@ struct InnerAndOuterLiferanges {
       self.domTree = domTree
     }
     
-    mutating func visitUse(operand: Operand, path: Path, state: State) -> UseVisitResult {
+    mutating func visitUse(operand: Operand, path: Path, state: State) -> UseResult {
       let user = operand.instruction
       if innerRange.blockRange.begin.dominates(user.block, domTree) {
         innerRange.insert(user)
@@ -262,17 +264,15 @@ struct InnerAndOuterLiferanges {
     }
   }
   
-  static func of(instruction: SingleValueInstruction, in domBlock: BasicBlock, domTree: DominatorTree, context: PassContext) -> (InstructionRange, BasicBlockRange) {
-    var walker = EscapeInfoWalker(calleeAnalysis: context.calleeAnalysis,
-                                  visitor: Visitor(
-                                    instruction: instruction,
-                                    domBlock: domBlock,
-                                    domTree: domTree,
-                                    context: context
-                                  ))
-    _ = walker.isEscaping(object: instruction)
-    return (walker.visitor.innerRange, walker.visitor.outerBlockRange)
-  }
+  var walker = EscapeInfo(calleeAnalysis: context.calleeAnalysis,
+                                visitor: Visitor(
+                                  instruction: instruction,
+                                  domBlock: domBlock,
+                                  domTree: domTree,
+                                  context: context
+                                ))
+  _ = walker.isEscaping(object: instruction)
+  return (walker.visitor.innerRange, walker.visitor.outerBlockRange)
 }
 
 private extension BasicBlockRange {
