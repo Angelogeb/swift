@@ -19,7 +19,7 @@ import SIL
 /// This pass is used for testing EscapeInfo.
 let escapeInfoDumper = FunctionPass(name: "dump-escape-info", {
   (function: Function, context: PassContext) in
-  
+
   print("Escape information for \(function.name):")
   
   struct Visitor : EscapeInfoVisitor {

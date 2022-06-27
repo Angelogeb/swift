@@ -121,7 +121,7 @@ func tryPromoteAlloc(_ allocRef: AllocRefInstBase,
   //
   let domTree = context.dominatorTree
   let outerDominatingBlock = getDominatingBlockOfAllUsePoints(context: context, allocRef, domTree: domTree)
-  
+
   // The "inner" liferange contains all use points which are dominated by the allocation block
   // The "outer" liferange contains all use points.
   var (innerRange, outerBlockRange) = computeInnerAndOuterLiferanges(instruction: allocRef, in: outerDominatingBlock, domTree: domTree, context: context)

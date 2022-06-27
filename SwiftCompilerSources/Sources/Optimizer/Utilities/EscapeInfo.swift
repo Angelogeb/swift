@@ -110,7 +110,7 @@ struct EscapeInfo<V: EscapeInfoVisitor> {
   }
   
   typealias Path = SmallProjectionPath
-  
+
   enum DefVisitResult {
     case ignore
     case continueWalkUp
@@ -127,7 +127,7 @@ struct EscapeInfo<V: EscapeInfoVisitor> {
   //===--------------------------------------------------------------------===//
   //                           The top-level API
   //===--------------------------------------------------------------------===//
-  
+
   init(calleeAnalysis: CalleeAnalysis, visitor: V) {
     self.walker = EscapeInfoWalker(calleeAnalysis: calleeAnalysis, visitor: visitor)
   }
@@ -165,7 +165,7 @@ struct EscapeInfo<V: EscapeInfoVisitor> {
     }
     return false
   }
-  
+
   /// Returns true if the definition of `value` is escaping.
   ///
   /// In contrast to `isEscaping`, this function starts with a walk-down instead of a walk-up from `value`.
@@ -175,7 +175,7 @@ struct EscapeInfo<V: EscapeInfoVisitor> {
     
     return walker.cachedWalkDown(addressOrValue: object, path: path, state: State(followStores: false, knownType: nil))
   }
-  
+
   /// Returns true if any address of `value`, which is selected by `path`, can escape.
   ///
   /// For example, let's assume this function is called with a struct, containing a reference,

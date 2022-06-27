@@ -32,7 +32,7 @@ fileprivate typealias Path = ArgumentEffect.Path
 let computeEffects = FunctionPass(name: "compute-effects", {
   (function: Function, context: PassContext) in
   var argsWithDefinedEffects = getArgIndicesWithDefinedEffects(of: function)
-  
+
   struct IgnoreRecursiveCallVisitor : EscapeInfoVisitor {
     func visitUse(operand: Operand, path: Path, state: State) -> UseResult {
       return isOperandOfRecursiveCall(operand) ? .ignore : .continueWalk
@@ -139,7 +139,7 @@ func addArgEffects(context: PassContext, _ arg: FunctionArgument, argPath ap: Pa
   
   let toSelection = walker.visitor.toSelection
   let fromSelection = Selection(arg, pathPattern: argPath)
-  
+
   guard let toSelection = toSelection else {
     newEffects.push(ArgumentEffect(.notEscaping, selectedArg: fromSelection))
     return true
