@@ -159,7 +159,7 @@ extension ValueDefUseWalker {
       if let (index, path) = path.pop(kind: .structField) {
         return walkDownUses(ofValue: ds.results[index], path: path, state: state)
       } else if path.topMatchesAnyValueField {
-        return walkDownUses(resultsOf: ds, path: path, state: state)
+        return walkDownResults(of: ds, path: path, state: state)
       } else {
         return leafOrUnmatched(value: operand, path: path, state: state)
       }
@@ -167,7 +167,7 @@ extension ValueDefUseWalker {
       if let (index, path) = path.pop(kind: .tupleField) {
         return walkDownUses(ofValue: dt.results[index], path: path, state: state)
       } else if path.topMatchesAnyValueField {
-        return walkDownUses(resultsOf: dt, path: path, state: state)
+        return walkDownResults(of: dt, path: path, state: state)
       } else {
         return leafOrUnmatched(value: operand, path: path, state: state)
       }
@@ -210,7 +210,7 @@ extension ValueDefUseWalker {
     return false
   }
   
-  mutating func walkDownUses(resultsOf value: MultipleValueInstruction, path: Path, state: State) -> Bool {
+  mutating func walkDownResults(of value: MultipleValueInstruction, path: Path, state: State) -> Bool {
     for result in value.results {
       if let (path, state) = shouldRecomputeDown(def: result, path: path, state: state) {
         if walkDownUses(ofValue: result, path: path, state: state) {
@@ -381,7 +381,7 @@ extension ValueUseDefWalker {
       if let (index, path) = path.pop(kind: .structField) {
         return walkUp(value: str.operands[index].value, path: path, state: state)
       } else if path.topMatchesAnyValueField {
-        return walkUp(operandsOf: str, path: path, state: state)
+        return walkUpOperands(of: str, path: path, state: state)
       } else {
         return rootOrUnmatched(value: str, path: path, state: state)
       }
@@ -389,7 +389,7 @@ extension ValueUseDefWalker {
       if let (index, path) = path.pop(kind: .tupleField) {
         return walkUp(value: t.operands[index].value, path: path, state: state)
       } else if path.topMatchesAnyValueField {
-        return walkUp(operandsOf: t, path: path, state: state)
+        return walkUpOperands(of: t, path: path, state: state)
       } else {
         return rootOrUnmatched(value: t, path: path, state: state)
       }
@@ -437,7 +437,7 @@ extension ValueUseDefWalker {
     }
   }
   
-  mutating func walkUp(operandsOf def: SingleValueInstruction, path: Path, state: State) -> Bool {
+  mutating func walkUpOperands(of def: SingleValueInstruction, path: Path, state: State) -> Bool {
     for operand in def.operands {
       // `shouldRecompute` is called to avoid exponential complexity in
       // programs like

@@ -90,7 +90,7 @@ extension EscapeInfoVisitor {
 /// \endcode
 ///
 /// The algorithm doesn't distinguish between addresses and values, i.e. loads
-/// and stores are treated as swalker. forwarding instructions, like casts.
+/// and stores are treated as simple forwarding instructions, like casts.
 /// For escaping it doesn't make a difference if a value or an address pointing to
 /// the value, escapes.
 /// An exception are `isEscaping(address: Value)` and similar functions: they ignore
@@ -785,8 +785,6 @@ fileprivate struct EscapeInfoWalker<V: EscapeInfoVisitor> : ValueDefUseWalker,
     }
     return nil
   }
-
-  var visitor: V
   
   //===--------------------------------------------------------------------===//
   //                             private state
@@ -835,6 +833,8 @@ fileprivate struct EscapeInfoWalker<V: EscapeInfoVisitor> : ValueDefUseWalker,
       return nil
     }
   }
+
+  var visitor: V
 
   // The caches are not only useful for performance, but are need to avoid infinite
   // recursions of walkUp-walkDown cycles.
