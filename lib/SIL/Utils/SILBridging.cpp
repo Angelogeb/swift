@@ -725,6 +725,18 @@ SwiftInt StoreInst_getStoreOwnership(BridgedInstruction store) {
   return (SwiftInt)castToInst<StoreInst>(store)->getOwnershipQualifier();
 }
 
+BridgedAccessKind BeginAccessInst_getAccessKind(BridgedInstruction beginAccess) {
+  auto kind = castToInst<BeginAccessInst>(beginAccess)->getAccessKind();
+  switch (kind) {
+    default:
+      llvm_unreachable("Invalid AccessKind");
+    case SILAccessKind::Read:
+      return BridgedAccessKind::AccessKind_Read;
+    case SILAccessKind::Modify:
+      return BridgedAccessKind::AccessKind_Modify;
+  }
+}
+
 SwiftInt CopyAddrInst_isTakeOfSrc(BridgedInstruction copyAddr) {
   return castToInst<CopyAddrInst>(copyAddr)->isTakeOfSrc() ? 1 : 0;
 }

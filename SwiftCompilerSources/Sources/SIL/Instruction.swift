@@ -488,7 +488,39 @@ final public class BridgeObjectToRefInst : SingleValueInstruction,
 final public class BridgeObjectToWordInst : SingleValueInstruction,
                                            UnaryInstruction {}
 
-final public class BeginAccessInst : SingleValueInstruction, UnaryInstruction {}
+public enum AccessKind {
+  case ini
+  case read
+  case modify
+  case deini
+}
+
+extension BridgedAccessKind {
+  var kind: AccessKind {
+    switch self {
+    case AccessKind_Init:
+      return .ini
+    case AccessKind_Read:
+      return .read
+    case AccessKind_Modify:
+      return .modify
+    case AccessKind_Deinit:
+      return .deini
+    default:
+      fatalError("unsupported access kind")
+    }
+  }
+}
+
+public typealias EndAccessInstructions = LazyMapSequence<LazyFilterSequence<LazyMapSequence<UseList, EndAccessInst?>>, EndAccessInst>
+
+final public class BeginAccessInst : SingleValueInstruction, UnaryInstruction {
+  public var accessKind: AccessKind { BeginAccessInst_getAccessKind(bridged).kind }
+  
+  public var endAccesses: EndAccessInstructions {
+    uses.lazy.compactMap({ $0.value.definingInstruction as? EndAccessInst })
+  }
+}
 
 final public class BeginBorrowInst : SingleValueInstruction, UnaryInstruction {}
 

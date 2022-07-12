@@ -10,6 +10,20 @@
 //
 //===----------------------------------------------------------------------===//
 
+public struct SideEffect {
+  var read: Bool
+  var write: Bool
+  var retain: Bool
+  var release: Bool
+  
+  public init(read: Bool = false, write: Bool = false, retain: Bool = false, release: Bool = false) {
+    self.read = read
+    self.write = write
+    self.retain = retain
+    self.release = release
+  }
+}
+
 /// An effect on a function argument.
 public struct ArgumentEffect : CustomStringConvertible, CustomReflectable {
 
@@ -120,6 +134,8 @@ public struct ArgumentEffect : CustomStringConvertible, CustomReflectable {
     ///   func notExclusiveEscape(_ c: Class) -> Class { return cond ? c : global }
     ///
     case escaping(Selection, Bool)  // to, exclusive
+    
+    case sideeffect(SideEffect)
   }
 
   /// To which argument (and projection) does this effect apply to?
@@ -156,6 +172,9 @@ public struct ArgumentEffect : CustomStringConvertible, CustomReflectable {
         self.kind = .notEscaping
       case .escaping(let toSelectedArg, let exclusive):
         self.kind = .escaping(copy(toSelectedArg), exclusive)
+      
+      case .sideeffect(let eff):
+        self.kind = .sideeffect(eff)
     }
   }
 
@@ -165,6 +184,10 @@ public struct ArgumentEffect : CustomStringConvertible, CustomReflectable {
         return "!\(selectedArg)"
       case .escaping(let toSelectedArg, let exclusive):
         return "\(selectedArg) \(exclusive ? "=>" : "->") \(toSelectedArg)"
+      
+      case .sideeffect(let eff):
+        let s = "\(eff.read ? "r" : "")\(eff.write ? "w" : "")\(eff.retain ? "+" : "")\(eff.release ? "-" : "")"
+        return "\(s)(\(selectedArg))"
     }
   }
 

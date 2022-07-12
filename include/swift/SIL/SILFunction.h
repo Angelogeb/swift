@@ -987,7 +987,8 @@ public:
   
   enum class ArgEffectKind {
     Unknown,
-    Escape
+    Escape,
+    SideEffect
   };
   
   std::pair<const char *, int>  parseEffects(StringRef attrs, bool fromSIL,

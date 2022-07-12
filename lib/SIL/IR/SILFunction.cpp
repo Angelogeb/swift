@@ -870,6 +870,8 @@ visitArgEffects(std::function<void(int, bool, ArgEffectKind)> c) const {
     ArgEffectKind kind = ArgEffectKind::Unknown;
     if (flags & EffectsFlagEscape)
       kind = ArgEffectKind::Escape;
+    else if (flags & EffectsFlagSideEffect)
+      kind = ArgEffectKind::SideEffect;
 
     c(idx, (flags & EffectsFlagDerived) != 0, kind);
     idx++;

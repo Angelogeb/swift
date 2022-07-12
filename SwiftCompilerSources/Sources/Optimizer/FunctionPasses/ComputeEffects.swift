@@ -173,6 +173,9 @@ private func getArgIndicesWithDefinedEffects(of function: Function) -> Set<Int> 
       if case .argument(let toArgIdx) = to.value {
         argsWithDefinedEffects.insert(toArgIdx)
       }
+    case .sideeffect:
+      // TODO: update this depending on whether sideeffects are computed with escapeinfo or not
+      break
     }
   }
   return argsWithDefinedEffects

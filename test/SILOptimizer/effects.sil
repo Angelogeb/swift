@@ -1,0 +1,263 @@
+// RUN: %target-sil-opt %s -infer-effects -o /dev/null | %FileCheck %s
+sil_stage canonical
+
+import Builtin
+import Swift
+
+class C {
+  @_hasStorage var x: Int
+  init()
+//  @objc deinit
+}
+
+struct MyStruct {
+  @_hasStorage @_hasInitialValue var i: Int64 { get set }
+  @_hasStorage @_hasInitialValue var j: Int64 { get set }
+}
+
+// CHECK-LABEL: Computing effects for storeToArgs
+// CHECK-NEXT: Instr:   store %4 to %6 : $*Int
+// CHECK-NEXT:   Scope:   %6 = begin_access [modify] [dynamic] %5 : $*Int
+// CHECK-NEXT:   Base: Class -   %5 = ref_element_addr %0 : $C, #C.x
+// CHECK-NEXT:   Path: 
+// CHECK-NEXT:     Root: %0 = argument of bb0 : $C
+// CHECK-NEXT:     Path: c0
+// CHECK-NEXT: Instr:   store %12 to %14 : $*Int
+// CHECK-NEXT:   Scope:   %14 = begin_access [modify] [dynamic] %13 : $*Int
+// CHECK-NEXT:   Base: Class -   %13 = ref_element_addr %1 : $C, #C.x
+// CHECK-NEXT:   Path: 
+// CHECK-NEXT:     Root: %1 = argument of bb0 : $C
+// CHECK-NEXT:     Path: c0
+// CHECK-NEXT: End computing effects for storeToArgs
+sil hidden @storeToArgs : $@convention(thin) (@guaranteed C, @guaranteed C) -> () {
+bb0(%1 : $C, %2 : $C):
+  cond_br undef, bb1, bb2
+
+bb1:
+  %8 = integer_literal $Builtin.Int64, 10
+  %9 = struct $Int (%8 : $Builtin.Int64)
+  %10 = ref_element_addr %1 : $C, #C.x
+  %11 = begin_access [modify] [dynamic] %10 : $*Int
+  store %9 to %11 : $*Int
+  end_access %11 : $*Int
+  %14 = tuple ()
+  br bb3
+
+bb2:
+  %16 = integer_literal $Builtin.Int64, 20
+  %17 = struct $Int (%16 : $Builtin.Int64)
+  %18 = ref_element_addr %2 : $C, #C.x
+  %19 = begin_access [modify] [dynamic] %18 : $*Int
+  store %17 to %19 : $*Int
+  end_access %19 : $*Int
+  %22 = tuple ()
+  br bb3
+
+bb3:
+  %24 = tuple ()
+  return %24 : $()
+}
+
+// CHECK-LABEL: Computing effects for storeMaybeLocalPhi
+// CHECK-NEXT: Instr:   store %8 to %10 : $*Int
+// CHECK-NEXT:   Scope:   %10 = begin_access [modify] [dynamic] %9 : $*Int
+// CHECK-NEXT:   Base: Class -   %9 = ref_element_addr %6 : $C, #C.x
+// CHECK-NEXT:   Path: 
+// CHECK-NEXT:     Root:   %4 = alloc_ref $C
+// CHECK-NEXT:     Path: c0
+// CHECK-NEXT:     Root: %0 = argument of bb0 : $C
+// CHECK-NEXT:     Path: c0
+// CHECK-NEXT: End computing effects for storeMaybeLocalPhi
+sil hidden @storeMaybeLocalPhi : $@convention(thin) (@guaranteed C) -> () {
+bb0(%1 : $C):
+  cond_br undef, bb1, bb2
+
+bb1:
+  strong_retain %1 : $C
+  br bb3(%1 : $C)
+
+bb2:
+  %10 = alloc_ref $C
+  br bb3(%10 : $C)
+
+bb3(%12 : $C):
+  %14 = integer_literal $Builtin.Int64, 20
+  %15 = struct $Int (%14 : $Builtin.Int64)
+  %16 = ref_element_addr %12 : $C, #C.x
+  %17 = begin_access [modify] [dynamic] %16 : $*Int
+  store %15 to %17 : $*Int
+  end_access %17 : $*Int
+  %20 = tuple ()
+  strong_release %12 : $C
+  %22 = tuple ()
+  return %22 : $()
+}
+
+
+// CHECK: Computing effects for testStructPhiCommon
+// CHECK-NEXT: Instr:   store %10 to [trivial] %8 : $*Int64
+// CHECK-NEXT:   Scope: base
+// CHECK-NEXT:   Base: Argument - %0 = argument of bb0 : $*MyStruct
+// CHECK-NEXT:   Path: s0
+// CHECK-NEXT: End computing effects for testStructPhiCommon
+sil hidden [ossa] @testStructPhiCommon : $@convention(thin) (@inout MyStruct) -> () {
+bb0(%0 : $*MyStruct):
+  %2 = struct_element_addr %0 : $*MyStruct, #MyStruct.i
+  cond_br undef, bb1, bb2
+
+bb1:
+  %3 = address_to_pointer %2 : $*Int64 to $Builtin.RawPointer
+  br bb3(%3 : $Builtin.RawPointer)
+
+bb2:
+  %5 = address_to_pointer %2 : $*Int64 to $Builtin.RawPointer
+  br bb3(%5 : $Builtin.RawPointer)
+
+bb3(%6 : $Builtin.RawPointer) :
+  %7 = pointer_to_address %6 : $Builtin.RawPointer to $*Int64
+  %8 = integer_literal $Builtin.Int64, 2
+  %9 = struct $Int64 (%8 : $Builtin.Int64)
+  store %9 to [trivial] %7 : $*Int64
+  %22 = tuple ()
+  return %22 : $()
+}
+
+// CHECK: Computing effects for testStructPhiDivergent
+// CHECK-NEXT: Instr:   store %11 to [trivial] %9 : $*Int64
+// CHECK-NEXT: End computing effects for testStructPhiDivergent
+sil hidden [ossa] @testStructPhiDivergent : $@convention(thin) (@inout MyStruct) -> () {
+bb0(%0 : $*MyStruct):
+  cond_br undef, bb1, bb2
+
+bb1:
+  %2 = struct_element_addr %0 : $*MyStruct, #MyStruct.i
+  %3 = address_to_pointer %2 : $*Int64 to $Builtin.RawPointer
+  br bb3(%3 : $Builtin.RawPointer)
+
+bb2:
+  %4 = struct_element_addr %0 : $*MyStruct, #MyStruct.j
+  %5 = address_to_pointer %4 : $*Int64 to $Builtin.RawPointer
+  br bb3(%5 : $Builtin.RawPointer)
+
+bb3(%6 : $Builtin.RawPointer) :
+  %7 = pointer_to_address %6 : $Builtin.RawPointer to $*Int64
+  %8 = integer_literal $Builtin.Int64, 2
+  %9 = struct $Int64 (%8 : $Builtin.Int64)
+  store %9 to [trivial] %7 : $*Int64
+  %22 = tuple ()
+  return %22 : $()
+}
+
+// CHECK-LABEL: Computing effects for testStructPhiChained
+// CHECK-NEXT: Instr:   store %17 to [trivial] %15 : $*Int64
+// CHECK-NEXT: End computing effects for testStructPhiChained
+sil hidden [ossa] @testStructPhiChained : $@convention(thin) (@inout MyStruct, @inout Int64) -> () {
+bb0(%0 : $*MyStruct, %1 : $*Int64):
+  cond_br undef, bb1, bb5
+
+bb1:
+  cond_br undef, bb2, bb3
+
+bb2:
+  %2 = address_to_pointer %1 : $*Int64 to $Builtin.RawPointer
+  br bb4(%2 : $Builtin.RawPointer)
+
+bb3:
+  %3 = struct_element_addr %0 : $*MyStruct, #MyStruct.i
+  %4 = address_to_pointer %3 : $*Int64 to $Builtin.RawPointer
+  br bb4(%4 : $Builtin.RawPointer)
+
+bb4(%6 : $Builtin.RawPointer) :
+  br bb6(%6 : $Builtin.RawPointer)
+
+bb5:
+  %7 = struct_element_addr %0 : $*MyStruct, #MyStruct.j
+  %8 = address_to_pointer %7 : $*Int64 to $Builtin.RawPointer
+  br bb6(%8 : $Builtin.RawPointer)
+
+bb6(%9 : $Builtin.RawPointer) :
+  %10 = pointer_to_address %9 : $Builtin.RawPointer to $*Int64
+  %11 = integer_literal $Builtin.Int64, 2
+  %12 = struct $Int64 (%11 : $Builtin.Int64)
+  store %12 to [trivial] %10 : $*Int64
+  %22 = tuple ()
+  return %22 : $()
+}
+
+
+struct _MyBridgeStorage {
+  @_hasStorage var rawValue : Builtin.BridgeObject
+}
+
+struct _MyArrayBuffer<T> {
+  @_hasStorage var _storage : _MyBridgeStorage
+}
+
+
+struct MyArray<T> {
+  @_hasStorage var _buffer : _MyArrayBuffer<T>
+}
+
+// CHECK-LABEL: Computing effects for arrayValue
+// CHECK-NEXT: Instr:   %11 = load [trivial] %10 : $*Builtin.Int64
+// CHECK-NEXT:   Scope: base
+// CHECK-NEXT:   Base: Tail -   %8 = ref_tail_addr [immutable] %7 : $__ContiguousArrayStorageBase, $Int64
+// CHECK-NEXT:   Path: s0
+// CHECK-NEXT:     Root: %0 = argument of bb0 : $MyArray<Int64>
+// CHECK-NEXT:     Path: s0.s0.s0.ct.s0
+// CHECK-NEXT: Instr:   %14 = load [trivial] %13 : $*Builtin.Int64
+// CHECK-NEXT:   Scope: base
+// CHECK-NEXT:   Base: Tail -   %8 = ref_tail_addr [immutable] %7 : $__ContiguousArrayStorageBase, $Int64
+// CHECK-NEXT:   Path: s0
+// CHECK-NEXT:     Root: %0 = argument of bb0 : $MyArray<Int64>
+// CHECK-NEXT:     Path: s0.s0.s0.ct.s0
+// CHECK-NEXT: End computing effects for arrayValue
+sil [ossa] @arrayValue : $@convention(thin) (@guaranteed MyArray<Int64>) -> Int64 {
+bb0(%0 : @guaranteed $MyArray<Int64>):
+  %1 = integer_literal $Builtin.Word, 3
+  %2 = integer_literal $Builtin.Word, 4
+  %3 = integer_literal $Builtin.Int1, -1
+  %4 = struct_extract %0 : $MyArray<Int64>, #MyArray._buffer
+  %5 = struct_extract %4 : $_MyArrayBuffer<Int64>, #_MyArrayBuffer._storage
+  %6 = struct_extract %5 : $_MyBridgeStorage, #_MyBridgeStorage.rawValue
+  %7 = unchecked_ref_cast %6 : $Builtin.BridgeObject to $__ContiguousArrayStorageBase
+  %8 = ref_tail_addr [immutable] %7 : $__ContiguousArrayStorageBase, $Int64
+  %9 = index_addr %8 : $*Int64, %1 : $Builtin.Word
+  %10 = struct_element_addr %9 : $*Int64, #Int64._value
+  %11 = load [trivial] %10 : $*Builtin.Int64
+  %12 = index_addr %8 : $*Int64, %2 : $Builtin.Word
+  %13 = struct_element_addr %12 : $*Int64, #Int64._value
+  %14 = load [trivial] %13 : $*Builtin.Int64
+  %15 = builtin "sadd_with_overflow_Int64"(%11 : $Builtin.Int64, %14 : $Builtin.Int64, %3 : $Builtin.Int1) : $(Builtin.Int64, Builtin.Int1)
+  %16 = tuple_extract %15 : $(Builtin.Int64, Builtin.Int1), 0
+  %17 = tuple_extract %15 : $(Builtin.Int64, Builtin.Int1), 1
+  cond_fail %17 : $Builtin.Int1, "arithmetic overflow"
+  %19 = struct $Int64 (%16 : $Builtin.Int64)
+  return %19 : $Int64
+}
+
+
+sil @testRootPhiCycle : $@convention(thin) (Builtin.BridgeObject, Builtin.BridgeObject) -> () {
+bb0(%0 : $Builtin.BridgeObject, %1 : $Builtin.BridgeObject):
+  cond_br undef, bb1, bb2
+
+bb1:
+  br bb3(%0 : $Builtin.BridgeObject)
+
+bb2:
+  br bb3(%1 : $Builtin.BridgeObject)
+
+bb3(%820 : $Builtin.BridgeObject):
+  %834 = unchecked_ref_cast %820 : $Builtin.BridgeObject to $C
+  %844 = ref_tail_addr [immutable] %834 : $C, $Double
+  %853 = load %844 : $*Double
+  %943 = load %844 : $*Double
+  cond_br undef, bb4, bb5
+
+bb4:
+  br bb3(%820 : $Builtin.BridgeObject)
+
+bb5:
+  %999 = tuple ()
+  return %999 : $()
+}

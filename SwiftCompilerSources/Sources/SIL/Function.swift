@@ -159,6 +159,8 @@ final public class Function : CustomStringConvertible, HasShortDescription {
         switch effect.kind {
           case .notEscaping, .escaping:
             flags |= Int(EffectsFlagEscape)
+          case .sideeffect:
+            flags |= Int(EffectsFlagSideEffect)
         }
         if effect.isDerived {
           flags |= Int(EffectsFlagDerived)
