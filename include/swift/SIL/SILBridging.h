@@ -182,7 +182,7 @@ enum {
   // Least significant bit is set to `1` if the effect is derived
   // 0b010 -> "define_escapes"
   // 0b011 -> "escapes"
-  // 0b101 -> "sideeffects" currently always derived
+  // 0b101 -> "sideeffects", currently always derived
   EffectsFlagDerived = 0x1,
   EffectsFlagEscape = 0x2,
   EffectsFlagSideEffect = 0x5,

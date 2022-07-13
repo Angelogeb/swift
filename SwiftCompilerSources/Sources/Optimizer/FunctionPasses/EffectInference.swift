@@ -42,11 +42,10 @@ func infer(_ function: Function) {
         if let ap = ap {
           print("  Base: \(ap.base)")
           print("  Path: \(ap.projectionPath)")
-          if let roots = arw.compute(ap) {
-            for r in roots {
-              print("    Root: \(r.root)")
-              print("    Path: \(r.path)")
-            }
+          let roots = arw.compute(ap)
+          for r in roots {
+            print("    Root: \(r.root)")
+            print("    Path: \(r.path)")
           }
         }
       }
@@ -57,32 +56,156 @@ func infer(_ function: Function) {
 struct EffectState {
   var argumentEffects: [SideEffect]
   var globalEffects: SideEffect = SideEffect()
+  var localEffects: SideEffect = SideEffect()
   
   var traps: Bool = false
   var readsRC: Bool = false
   
+  var accessPathWalker = AccessPathWalker()
+  var accessRootWalker = AccessRootWalker()
+  
   init(_ nargs: Int) {
-    argumentEffects = []
-    argumentEffects.reserveCapacity(nargs)
+    argumentEffects = Array(repeating: SideEffect(), count: nargs)
   }
   
-  func update() {
+  private
+  func isLocallyAllocated(_ value: Value) -> Bool {
+    switch value {
+    case is AllocStackInst, is AllocRefInst, is AllocRefDynamicInst, is AllocBoxInst:
+      return true
+    default:
+      return false
+    }
+  }
+  
+  private mutating
+  func updateEffect(_ origin: Value, _ update: (inout SideEffect) -> ()) {
+    switch origin {
+    case let arg as FunctionArgument:
+      update(&argumentEffects[arg.index])
+    case _ where isLocallyAllocated(origin):
+      update(&localEffects)
+    default:
+      update(&globalEffects)
+    }
+  }
+  
+  private mutating
+  func updateEffect(to value: Value, _ update: (inout SideEffect) -> ()) {
+    if value.type.isAddress {
+      guard let ap = accessPathWalker.compute(value) else { return globalEffects.setWorstEffects() }
+      let ba = ap.base.baseAddress
+      if isLocallyAllocated(ba) {
+        updateEffect(ba, update)
+      } else if let _ = ba as? FunctionArgument {
+        updateEffect(ba, update)
+      } else if let _ = ap.base.reference {
+        let roots = accessRootWalker.compute(ap)
+        for root in roots {
+          updateEffect(root.root, update)
+        }
+      } else {
+        update(&globalEffects)
+      }
+    } else {
+      let roots = accessRootWalker.compute(value)
+      for root in roots {
+        updateEffect(root.root, update)
+      }
+    }
+  }
+  
+  mutating
+  func update(for inst: Instruction) {
+    switch inst {
+    case is ApplyInst:
+      let appsite = inst as! FullApplySite
+      let effects = appsite.function.effects
+      let sideeffects: [(Int, SideEffect)] = effects.argumentEffects.compactMap({
+        switch $0.kind {
+        case let .sideeffect(eff):
+          return ($0.selectedArg.argumentIndex, eff)
+        default:
+          return nil
+        }
+      })
+      let arguments: [Value] = appsite.arguments.map({ $0 })
+      for (paramIdx, eff) in sideeffects {
+        let argIdx = appsite.callerArgIndex(calleeArgIndex: paramIdx)!
+        updateEffect(to: arguments[argIdx], { $0.merge(eff) })
+      }
+    case let fl as FixLifetimeInst:
+      updateEffect(to: fl.operand, { $0.read = true })
+    case is AllocStackInst, is DeallocStackInst:
+      break
+    case is StrongRetainInst, is RetainValueInst:
+      // TODO: strong_retain_unowned etc?
+      updateEffect(to: (inst as! UnaryInstruction).operand, { $0.retain = true })
+    case is StrongReleaseInst, is ReleaseValueInst:
+      updateEffect(to: (inst as! UnaryInstruction).operand, { $0.release = true })
+    case let cast as UnconditionalCheckedCastInst:
+      updateEffect(to: cast.operand, { $0.read = true })
+      traps = true
+    case let lb as LoadBorrowInst:
+      updateEffect(to: lb.operand, { $0.read = true })
+    case let load as LoadInst:
+      updateEffect(to: load, {
+        $0.read = true
+        // Ownership Qualifier?
+      })
+    case let store as StoreInst:
+      updateEffect(to: store.destinationOperand.value, {
+        $0.write = true
+        if store.destinationOwnership == .assign {
+          $0.release = true
+        }
+      })
+    case is CondFailInst:
+      traps = true
+    case let pa as PartialApplyInst:
+      fatalError("TODO")
+    case let bi as BuiltinInst:
+      fatalError("TODO")
+    default:
+      break
+    }
+    
+    globalEffects.read = inst.mayReadFromMemory
+    globalEffects.write = inst.mayWriteToMemory
+    if inst.mayHaveSideEffects {
+      globalEffects.setWorstEffects()
+    }
+    
+    if inst.mayTrap {
+      traps = true
+    }
   }
 }
 
 let effectInference = FunctionPass(name: "infer-effects", {
   (function: Function, context: PassContext) in
-
-
   print("Computing effects for \(function.name)")
+  
   infer(function)
-  context.modifyEffects(in: function, {effects in
-    effects.argumentEffects.append(
-      ArgumentEffect(
-        .sideeffect(SideEffect(read: true, write: false)),
-        selectedArg: ArgumentEffect.Selection(.argument(0), pathPattern: SmallProjectionPath())
+  
+  var effectState = EffectState(function.entryBlock.arguments.endIndex)
+  
+  for block in function.blocks {
+    for inst in block.instructions {
+      effectState.update(for: inst)
+    }
+  }
+  
+  context.modifyEffects(in: function, { effects in
+    for (idx, effect) in effectState.argumentEffects.enumerated() {
+      effects.argumentEffects.append(
+        ArgumentEffect(
+          .sideeffect(effect),
+          selectedArg: ArgumentEffect.Selection(.argument(idx), pathPattern: SmallProjectionPath(.anything))
+        )
       )
-    )
+    }
   })
+  
   print("End computing effects for \(function.name)")
 })

@@ -399,12 +399,18 @@ struct AccessRootWalkerInternal : ValueUseDefWalker, WithDefaultCache {
 
 struct AccessRootWalker {
   private var walker = AccessRootWalkerInternal()
-  mutating func compute(_ ap: AccessPath) -> [AccessRoot]? {
+  mutating func compute(_ ap: AccessPath) -> [AccessRoot] {
     walker.start()
     if let (ref, (fieldKind, fieldIndex)) = ap.base.referenceWithPathComponent {
       _ = walker.walkUp(value: ref, path: ap.projectionPath.push(fieldKind, index: fieldIndex),
                         state: AccessRootWalkerInternal.State())
     }
+    return walker.roots
+  }
+  
+  mutating func compute(_ ref: Value) -> [AccessRoot] {
+    walker.start()
+    _ = walker.walkUp(value: ref, path: SmallProjectionPath(), state: AccessRootWalkerInternal.State())
     return walker.roots
   }
 }

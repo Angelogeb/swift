@@ -11,16 +11,30 @@
 //===----------------------------------------------------------------------===//
 
 public struct SideEffect {
-  var read: Bool
-  var write: Bool
-  var retain: Bool
-  var release: Bool
+  public var read: Bool
+  public var write: Bool
+  public var retain: Bool
+  public var release: Bool
   
   public init(read: Bool = false, write: Bool = false, retain: Bool = false, release: Bool = false) {
     self.read = read
     self.write = write
     self.retain = retain
     self.release = release
+  }
+  
+  public mutating func setWorstEffects() {
+    self.read = true
+    self.write = true
+    self.retain = true
+    self.release = true
+  }
+  
+  public mutating func merge(_ other: SideEffect) {
+    read = read || other.read
+    write = write || other.write
+    retain = retain || other.retain
+    release = release || other.release
   }
 }
 
