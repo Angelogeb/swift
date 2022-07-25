@@ -231,6 +231,7 @@ SwiftInt SILFunction_hasSemanticsAttr(BridgedFunction function,
 
 BridgedStringRef SILGlobalVariable_getName(BridgedGlobalVar global);
 std::string SILGlobalVariable_debugDescription(BridgedGlobalVar global);
+SwiftInt SILGlobalVariable_isLet(BridgedGlobalVar global);
 
 OptionalBridgedBasicBlock SILBasicBlock_next(BridgedBasicBlock block);
 OptionalBridgedBasicBlock SILBasicBlock_previous(BridgedBasicBlock block);
@@ -319,6 +320,7 @@ SwiftInt InitEnumDataAddrInst_caseIndex(BridgedInstruction idea);
 SwiftInt UncheckedTakeEnumDataAddrInst_caseIndex(BridgedInstruction utedi);
 SwiftInt InjectEnumAddrInst_caseIndex(BridgedInstruction ieai);
 SwiftInt RefElementAddrInst_fieldIndex(BridgedInstruction reai);
+SwiftInt RefElementAddrInst_fieldIsLet(BridgedInstruction reai);
 SwiftInt PartialApplyInst_numArguments(BridgedInstruction ai);
 SwiftInt ApplyInst_numArguments(BridgedInstruction ai);
 SwiftInt PartialApply_getCalleeArgIndexOfFirstAppliedArg(BridgedInstruction pai);

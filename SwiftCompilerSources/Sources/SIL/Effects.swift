@@ -36,6 +36,8 @@ public struct SideEffect {
     retain = retain || other.retain
     release = release || other.release
   }
+
+  public var isPure: Bool { return !(read || write || retain || release)}
 }
 
 /// An effect on a function argument.
@@ -198,10 +200,10 @@ public struct ArgumentEffect : CustomStringConvertible, CustomReflectable {
         return "!\(selectedArg)"
       case .escaping(let toSelectedArg, let exclusive):
         return "\(selectedArg) \(exclusive ? "=>" : "->") \(toSelectedArg)"
-      
       case .sideeffect(let eff):
         let s = "\(eff.read ? "r" : "")\(eff.write ? "w" : "")\(eff.retain ? "+" : "")\(eff.release ? "-" : "")"
-        return "\(s)(\(selectedArg))"
+        guard case .argument(let idx) = selectedArg.value else  { fatalError("Impossible") }
+        return "\(s.isEmpty ? "_" : s)(\(idx != -1 ? selectedArg.description : "?"))"
     }
   }
 

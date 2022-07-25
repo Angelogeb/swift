@@ -448,6 +448,8 @@ final public class UncheckedTakeEnumDataAddrInst : SingleValueInstruction, Unary
 
 final public class RefElementAddrInst : SingleValueInstruction, UnaryInstruction {
   public var fieldIndex: Int { RefElementAddrInst_fieldIndex(bridged) }
+
+  public var fieldIsLet: Bool { RefElementAddrInst_fieldIsLet(bridged) != 0 }
 }
 
 final public class RefTailAddrInst : SingleValueInstruction, UnaryInstruction {}
@@ -512,12 +514,19 @@ extension BridgedAccessKind {
   }
 }
 
-public typealias EndAccessInstructions = LazyMapSequence<LazyFilterSequence<LazyMapSequence<UseList, EndAccessInst?>>, EndAccessInst>
 
-final public class BeginAccessInst : SingleValueInstruction, UnaryInstruction {
+public protocol ScopedInstruction {
+  associatedtype EndInstructions
+
+  var endInstructions: EndInstructions { get }
+}
+
+// TODO: add support for begin_unpaired_access
+final public class BeginAccessInst : SingleValueInstruction, UnaryInstruction, ScopedInstruction {
+  public typealias EndInstructions = LazyMapSequence<LazyFilterSequence<LazyMapSequence<UseList, EndAccessInst?>>, EndAccessInst>
   public var accessKind: AccessKind { BeginAccessInst_getAccessKind(bridged).kind }
   
-  public var endAccesses: EndAccessInstructions {
+  public var endInstructions: EndInstructions {
     uses.lazy.compactMap({ $0.value.definingInstruction as? EndAccessInst })
   }
 }

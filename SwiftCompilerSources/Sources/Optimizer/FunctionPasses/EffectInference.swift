@@ -12,49 +12,43 @@
 
 import SIL
 
-func theOperand(_ instr: Instruction) -> Value? {
-  switch instr {
-  case let st as StoreInst:
-    return st.destinationOperand.value
-  case let load as LoadInst:
-    return load.operand
-  default:
-    return nil
-  }
-}
-
-func infer(_ function: Function) {
-  var apw = AccessPathWalker()
-  var arw = AccessRootWalker()
+let effectInference = FunctionPass(name: "infer-effects", {
+  (function: Function, context: PassContext) in
+  // print("Computing effects for \(function.name)")
+  
+  // infer(function)
+  
+  var effectState = EffectState(function.entryBlock.arguments.endIndex)
+  
   for block in function.blocks {
-    for instr in block.instructions {
-      if let op = theOperand(instr) {
-        print("Instr: \(instr)")
-        let (ap, scope) = apw.pathWithScope(of: op)
-        if let scope = scope {
-          switch scope {
-          case let .scope(scope):
-            print("  Scope: \(scope.beginAccess)")
-          case .base(_):
-            print("  Scope: base")
-          }
-        }
-        if let ap = ap {
-          print("  Base: \(ap.base)")
-          print("  Path: \(ap.projectionPath)")
-          let roots = arw.compute(ap)
-          for r in roots {
-            print("    Root: \(r.root)")
-            print("    Path: \(r.path)")
-          }
-        }
-      }
+    for inst in block.instructions {
+      effectState.update(for: inst)
     }
   }
-}
+  
+  context.modifyEffects(in: function, { effects in
+    effects.argumentEffects.append(
+      ArgumentEffect(
+        .sideeffect(effectState.globalEffects),
+        selectedArg: ArgumentEffect.Selection(.argument(-1), pathPattern: SmallProjectionPath(.anything))
+      )
+    )
+    for (idx, (effect, path)) in effectState.argumentEffects.enumerated() {
+      effects.argumentEffects.append(
+        ArgumentEffect(
+          .sideeffect(effect),
+          selectedArg: ArgumentEffect.Selection(.argument(idx), pathPattern: effect.isPure ? SmallProjectionPath(): path!)
+        )
+      )
+    }
+  })
+  
+  // print("End computing effects for \(function.name)")
+})
+
 
 struct EffectState {
-  var argumentEffects: [SideEffect]
+  var argumentEffects: [(eff: SideEffect, path: SmallProjectionPath?)]
   var globalEffects: SideEffect = SideEffect()
   var localEffects: SideEffect = SideEffect()
   
@@ -62,28 +56,23 @@ struct EffectState {
   var readsRC: Bool = false
   
   var accessPathWalker = AccessPathWalker()
-  var accessRootWalker = AccessRootWalker()
+  var accessStorageWalker = AccessStoragePathWalker()
   
   init(_ nargs: Int) {
-    argumentEffects = Array(repeating: SideEffect(), count: nargs)
-  }
-  
-  private
-  func isLocallyAllocated(_ value: Value) -> Bool {
-    switch value {
-    case is AllocStackInst, is AllocRefInst, is AllocRefDynamicInst, is AllocBoxInst:
-      return true
-    default:
-      return false
-    }
+    argumentEffects = Array(repeating: (SideEffect(), nil), count: nargs)
   }
   
   private mutating
-  func updateEffect(_ origin: Value, _ update: (inout SideEffect) -> ()) {
+  func updateEffect(_ origin: Value, _ update: (inout SideEffect) -> (), _ path: SmallProjectionPath! = nil) {
     switch origin {
     case let arg as FunctionArgument:
-      update(&argumentEffects[arg.index])
-    case _ where isLocallyAllocated(origin):
+      update(&argumentEffects[arg.index].eff)
+      if let oldPath = argumentEffects[arg.index].path {
+        argumentEffects[arg.index].path = oldPath.merge(with: path)
+      } else {
+        argumentEffects[arg.index].path = path
+      }
+    case is Allocation:
       update(&localEffects)
     default:
       update(&globalEffects)
@@ -95,22 +84,22 @@ struct EffectState {
     if value.type.isAddress {
       guard let ap = accessPathWalker.compute(value) else { return globalEffects.setWorstEffects() }
       let ba = ap.base.baseAddress
-      if isLocallyAllocated(ba) {
-        updateEffect(ba, update)
+      if ba is Allocation {
+        update(&localEffects)
       } else if let _ = ba as? FunctionArgument {
-        updateEffect(ba, update)
+        updateEffect(ba, update, ap.projectionPath)
       } else if let _ = ap.base.reference {
-        let roots = accessRootWalker.compute(ap)
+        let roots = accessStorageWalker.compute(ap)
         for root in roots {
-          updateEffect(root.root, update)
+          updateEffect(root.storage, update, root.path)
         }
       } else {
         update(&globalEffects)
       }
     } else {
-      let roots = accessRootWalker.compute(value)
+      let roots = accessStorageWalker.compute(value)
       for root in roots {
-        updateEffect(root.root, update)
+        updateEffect(root.storage, update, root.path)
       }
     }
   }
@@ -129,18 +118,28 @@ struct EffectState {
           return nil
         }
       })
+      // TODO: handle global effects (?)
       let arguments: [Value] = appsite.arguments.map({ $0 })
       for (paramIdx, eff) in sideeffects {
         let argIdx = appsite.callerArgIndex(calleeArgIndex: paramIdx)!
         updateEffect(to: arguments[argIdx], { $0.merge(eff) })
       }
+      return
     case let fl as FixLifetimeInst:
-      updateEffect(to: fl.operand, { $0.read = true })
+      return updateEffect(to: fl.operand, { $0.read = true })
     case is AllocStackInst, is DeallocStackInst:
       break
+    case is BeginAccessInst:
+      // TODO: set true only for dynamic enforcement (?)
+      traps = true
+    case is EndAccessInst, is BeginBorrowInst, is EndBorrowInst:
+      break
+    // case is AllocRefInst allocates
     case is StrongRetainInst, is RetainValueInst:
       // TODO: strong_retain_unowned etc?
-      updateEffect(to: (inst as! UnaryInstruction).operand, { $0.retain = true })
+      updateEffect(to: (inst as! UnaryInstruction).operand, {
+        $0.retain = true
+      })
     case is StrongReleaseInst, is ReleaseValueInst:
       updateEffect(to: (inst as! UnaryInstruction).operand, { $0.release = true })
     case let cast as UnconditionalCheckedCastInst:
@@ -149,7 +148,7 @@ struct EffectState {
     case let lb as LoadBorrowInst:
       updateEffect(to: lb.operand, { $0.read = true })
     case let load as LoadInst:
-      updateEffect(to: load, {
+      updateEffect(to: load.operand, {
         $0.read = true
         // Ownership Qualifier?
       })
@@ -162,50 +161,61 @@ struct EffectState {
       })
     case is CondFailInst:
       traps = true
-    case let pa as PartialApplyInst:
-      fatalError("TODO")
-    case let bi as BuiltinInst:
-      fatalError("TODO")
+    // case let pa as PartialApplyInst:
+    //   fatalError("TODO")
+    // case let bi as BuiltinInst:
+    //   fatalError("TODO")
     default:
-      break
-    }
-    
-    globalEffects.read = inst.mayReadFromMemory
-    globalEffects.write = inst.mayWriteToMemory
-    if inst.mayHaveSideEffects {
-      globalEffects.setWorstEffects()
-    }
-    
-    if inst.mayTrap {
-      traps = true
+      globalEffects.read = globalEffects.read || inst.mayReadFromMemory
+      globalEffects.write = globalEffects.write || inst.mayWriteToMemory
+      if inst.mayHaveSideEffects {
+        globalEffects.setWorstEffects()
+      }
+      
+      if inst.mayTrap {
+        traps = true
+      }
     }
   }
 }
 
-let effectInference = FunctionPass(name: "infer-effects", {
-  (function: Function, context: PassContext) in
-  print("Computing effects for \(function.name)")
-  
-  infer(function)
-  
-  var effectState = EffectState(function.entryBlock.arguments.endIndex)
-  
+func theOperand(_ instr: Instruction) -> Value? {
+  switch instr {
+  case let st as StoreInst:
+    return st.destinationOperand.value
+  case let load as LoadInst:
+    return load.operand
+  default:
+    return nil
+  }
+}
+
+func infer(_ function: Function) {
+  var apw = AccessPathWalker()
+  var arw = AccessStoragePathWalker()
   for block in function.blocks {
-    for inst in block.instructions {
-      effectState.update(for: inst)
+    for instr in block.instructions {
+      if let op = theOperand(instr) {
+        print("Instr: \(instr)")
+        let (ap, scope) = apw.pathWithScope(of: op)
+        if let scope = scope {
+          switch scope {
+          case let .scope(ba):
+            print("  Scope: \(ba)")
+          case .base(_):
+            print("  Scope: base")
+          }
+        }
+        if let ap = ap {
+          print("  Base: \(ap.base)")
+          print("  Path: \(ap.projectionPath)")
+          let storage = arw.compute(ap)
+          for r in storage {
+            print("    Storage: \(r.storage)")
+            print("    Path: \(r.path)")
+          }
+        }
+      }
     }
   }
-  
-  context.modifyEffects(in: function, { effects in
-    for (idx, effect) in effectState.argumentEffects.enumerated() {
-      effects.argumentEffects.append(
-        ArgumentEffect(
-          .sideeffect(effect),
-          selectedArg: ArgumentEffect.Selection(.argument(idx), pathPattern: SmallProjectionPath(.anything))
-        )
-      )
-    }
-  })
-  
-  print("End computing effects for \(function.name)")
-})
+}
