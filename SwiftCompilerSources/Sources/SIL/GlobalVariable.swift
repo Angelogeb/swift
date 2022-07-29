@@ -37,7 +37,7 @@ public func ==(_ lhs: GlobalVariable, _ rhs: GlobalVariable) -> Bool {
 }
 
 public func !=(_ lhs: GlobalVariable, _ rhs: GlobalVariable) -> Bool {
-  return !(lhs === rhs)
+  return (lhs !== rhs)
 }
 
 // Bridging utilities

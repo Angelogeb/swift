@@ -491,23 +491,23 @@ final public class BridgeObjectToWordInst : SingleValueInstruction,
                                            UnaryInstruction {}
 
 public enum AccessKind {
-  case ini
+  case initialize
   case read
   case modify
-  case deini
+  case deinitialize
 }
 
 extension BridgedAccessKind {
   var kind: AccessKind {
     switch self {
     case AccessKind_Init:
-      return .ini
+      return .initialize
     case AccessKind_Read:
       return .read
     case AccessKind_Modify:
       return .modify
     case AccessKind_Deinit:
-      return .deini
+      return .deinitialize
     default:
       fatalError("unsupported access kind")
     }

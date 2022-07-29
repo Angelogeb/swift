@@ -863,8 +863,8 @@ void SILFunction::
 visitArgEffects(std::function<void(int, bool, ArgEffectKind)> c) const {
   if (!getEffectFlagsFunction)
     return;
-    
-  int idx = 0;
+  // effects with index -1 are effects that are not tied to a specific argument
+  int idx = -1;
   BridgedFunction bridgedFn = {const_cast<SILFunction *>(this)};
   while (int flags = getEffectFlagsFunction(bridgedFn, idx)) {
     ArgEffectKind kind = ArgEffectKind::Unknown;

@@ -152,7 +152,7 @@ class SILFunction
     public SwiftObjectHeader {
     
 private:
-  void *libswiftSpecificData[1];
+  void *libswiftSpecificData[2];
 
 public:
   using BlockListType = llvm::iplist<SILBasicBlock>;

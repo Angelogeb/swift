@@ -54,7 +54,7 @@ final public class Function : CustomStringConvertible, HasShortDescription {
     assert(selfIdx >= 0)
     return selfIdx
   }
-  
+
   public var argumentTypes: ArgumentTypeArray { ArgumentTypeArray(function: self) }
   public var resultType: Type { SILFunction_getSILResultType(bridged).type }
 
@@ -104,7 +104,9 @@ final public class Function : CustomStringConvertible, HasShortDescription {
       },
       // writeFn
       { (f: BridgedFunction, os: BridgedOStream, idx: Int) in
-        let s = f.function.effects.argumentEffects[idx].description
+        let s = (idx == -1 ?
+          "\(f.function.effects.globalEffects)(?)" :
+          f.function.effects.argumentEffects[idx].description)
         s.withBridgedStringRef { OStream_write(os, $0) }
       },
       // parseFn:
@@ -138,7 +140,7 @@ final public class Function : CustomStringConvertible, HasShortDescription {
         let destFunc = toFunc.function
         let srcResultArgs = srcFunc.numIndirectResultArguments
         let destResultArgs = destFunc.numIndirectResultArguments
-        
+
         // We only support reabstraction (indirect -> direct) of a single
         // return value.
         if srcResultArgs != destResultArgs &&
@@ -152,6 +154,7 @@ final public class Function : CustomStringConvertible, HasShortDescription {
       },
       // getEffectFlags
       {  (f: BridgedFunction, idx: Int) -> Int in
+        if idx == -1 { return Int(EffectsFlagSideEffect) | Int(EffectsFlagDerived) }
         let argEffects = f.function.effects.argumentEffects
         if idx >= argEffects.count { return 0 }
         let effect = argEffects[idx]
@@ -235,6 +238,17 @@ public enum ArgumentConvention {
   /// This argument is passed directly.  Its type is non-trivial, and the caller
   /// guarantees its validity for the entirety of the call.
   case directGuaranteed
+
+
+  public var isIndirect: Bool {
+    switch self {
+    case .indirectIn, .indirectInConstant, .indirectInGuaranteed,
+         .indirectInout, .indirectInoutAliasable, .indirectOut:
+      return true
+    case .directOwned, .directUnowned, .directGuaranteed:
+      return false
+    }
+  }
 }
 
 // Bridging utilities

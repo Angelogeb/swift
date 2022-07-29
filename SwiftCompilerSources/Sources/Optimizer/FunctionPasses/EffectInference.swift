@@ -18,7 +18,7 @@ let effectInference = FunctionPass(name: "infer-effects", {
   
   // infer(function)
   
-  var effectState = EffectState(function.entryBlock.arguments.endIndex)
+  var effectState = EffectState(function.entryBlock.arguments.endIndex, context.calleeAnalysis)
   
   for block in function.blocks {
     for inst in block.instructions {
@@ -27,12 +27,7 @@ let effectInference = FunctionPass(name: "infer-effects", {
   }
   
   context.modifyEffects(in: function, { effects in
-    effects.argumentEffects.append(
-      ArgumentEffect(
-        .sideeffect(effectState.globalEffects),
-        selectedArg: ArgumentEffect.Selection(.argument(-1), pathPattern: SmallProjectionPath(.anything))
-      )
-    )
+    effects.globalEffects = effectState.globalEffects
     for (idx, (effect, path)) in effectState.argumentEffects.enumerated() {
       effects.argumentEffects.append(
         ArgumentEffect(
@@ -48,7 +43,7 @@ let effectInference = FunctionPass(name: "infer-effects", {
 
 
 struct EffectState {
-  var argumentEffects: [(eff: SideEffect, path: SmallProjectionPath?)]
+  var argumentEffects: [(effect: SideEffect, path: SmallProjectionPath?)]
   var globalEffects: SideEffect = SideEffect()
   var localEffects: SideEffect = SideEffect()
   
@@ -58,15 +53,18 @@ struct EffectState {
   var accessPathWalker = AccessPathWalker()
   var accessStorageWalker = AccessStoragePathWalker()
   
-  init(_ nargs: Int) {
+  private let calleeAnalysis: CalleeAnalysis
+  
+  init(_ nargs: Int, _ calleeAnalysis: CalleeAnalysis) {
     argumentEffects = Array(repeating: (SideEffect(), nil), count: nargs)
+    self.calleeAnalysis = calleeAnalysis
   }
   
   private mutating
   func updateEffect(_ origin: Value, _ update: (inout SideEffect) -> (), _ path: SmallProjectionPath! = nil) {
     switch origin {
     case let arg as FunctionArgument:
-      update(&argumentEffects[arg.index].eff)
+      update(&argumentEffects[arg.index].effect)
       if let oldPath = argumentEffects[arg.index].path {
         argumentEffects[arg.index].path = oldPath.merge(with: path)
       } else {
@@ -82,7 +80,7 @@ struct EffectState {
   private mutating
   func updateEffect(to value: Value, _ update: (inout SideEffect) -> ()) {
     if value.type.isAddress {
-      guard let ap = accessPathWalker.compute(value) else { return globalEffects.setWorstEffects() }
+      guard let ap = accessPathWalker.getAccessPath(of: value) else { return globalEffects.setWorstEffects() }
       let ba = ap.base.baseAddress
       if ba is Allocation {
         update(&localEffects)
@@ -107,22 +105,33 @@ struct EffectState {
   mutating
   func update(for inst: Instruction) {
     switch inst {
-    case is ApplyInst:
-      let appsite = inst as! FullApplySite
-      let effects = appsite.function.effects
-      let sideeffects: [(Int, SideEffect)] = effects.argumentEffects.compactMap({
-        switch $0.kind {
-        case let .sideeffect(eff):
-          return ($0.selectedArg.argumentIndex, eff)
-        default:
-          return nil
+    case let apply as ApplyInst:
+      guard let callees = calleeAnalysis.getCallees(callee: apply.callee) else { return globalEffects.setWorstEffects() }
+      
+      for callee in callees {
+        // Collect callee `sideeffect`s
+        let effects = callee.effects
+        let sideeffects = effects.argumentEffects.lazy.compactMap({
+          switch $0.kind {
+          case let .sideeffect(effect):
+            return ($0.selectedArg.argumentIndex, effect)
+          default:
+            return nil
+          }
+        })
+        
+        // Update global effects
+        globalEffects.merge(callee.effects.globalEffects)
+        
+        // Update argument effects
+        let arguments = apply.argumentOperands
+        for (paramIdx, effect) in sideeffects {
+          if let argIdx = apply.callerArgIndex(calleeArgIndex: paramIdx) {
+            updateEffect(to: arguments[argIdx].value, { $0.merge(effect) })
+          } else {
+            globalEffects.merge(effect)
+          }
         }
-      })
-      // TODO: handle global effects (?)
-      let arguments: [Value] = appsite.arguments.map({ $0 })
-      for (paramIdx, eff) in sideeffects {
-        let argIdx = appsite.callerArgIndex(calleeArgIndex: paramIdx)!
-        updateEffect(to: arguments[argIdx], { $0.merge(eff) })
       }
       return
     case let fl as FixLifetimeInst:
@@ -150,7 +159,7 @@ struct EffectState {
     case let load as LoadInst:
       updateEffect(to: load.operand, {
         $0.read = true
-        // Ownership Qualifier?
+        // TODO: Ownership Qualifier?
       })
     case let store as StoreInst:
       updateEffect(to: store.destinationOperand.value, {
@@ -161,10 +170,14 @@ struct EffectState {
       })
     case is CondFailInst:
       traps = true
-    // case let pa as PartialApplyInst:
-    //   fatalError("TODO")
-    // case let bi as BuiltinInst:
-    //   fatalError("TODO")
+    case let pa as PartialApplyInst:
+      for (i, arg) in pa.arguments.enumerated() {
+        if pa.getArgumentConvention(calleeArgIndex: i).isIndirect {
+          updateEffect(to: arg) { $0.read = true }
+        }
+      }
+     case let bi as BuiltinInst:
+       fatalError("TODO")
     default:
       globalEffects.read = globalEffects.read || inst.mayReadFromMemory
       globalEffects.write = globalEffects.write || inst.mayWriteToMemory
@@ -197,7 +210,7 @@ func infer(_ function: Function) {
     for instr in block.instructions {
       if let op = theOperand(instr) {
         print("Instr: \(instr)")
-        let (ap, scope) = apw.pathWithScope(of: op)
+        let (ap, scope) = apw.getAccessPathWithScope(of: op)
         if let scope = scope {
           switch scope {
           case let .scope(ba):

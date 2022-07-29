@@ -10,7 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-public struct SideEffect {
+public struct SideEffect : CustomStringConvertible {
   public var read: Bool
   public var write: Bool
   public var retain: Bool
@@ -38,6 +38,11 @@ public struct SideEffect {
   }
 
   public var isPure: Bool { return !(read || write || retain || release)}
+  
+  public var description: String {
+    if isPure { return "_" }
+    else { return "\(read ? "r" : "")\(write ? "w" : "")\(retain ? "+" : "")\(release ? "-" : "")" }
+  }
 }
 
 /// An effect on a function argument.
@@ -200,10 +205,9 @@ public struct ArgumentEffect : CustomStringConvertible, CustomReflectable {
         return "!\(selectedArg)"
       case .escaping(let toSelectedArg, let exclusive):
         return "\(selectedArg) \(exclusive ? "=>" : "->") \(toSelectedArg)"
-      case .sideeffect(let eff):
-        let s = "\(eff.read ? "r" : "")\(eff.write ? "w" : "")\(eff.retain ? "+" : "")\(eff.release ? "-" : "")"
-        guard case .argument(let idx) = selectedArg.value else  { fatalError("Impossible") }
-        return "\(s.isEmpty ? "_" : s)(\(idx != -1 ? selectedArg.description : "?"))"
+      case .sideeffect(let effect):
+        let s = effect.description
+        return "\(s)(\(selectedArg.description))"
     }
   }
 
@@ -215,6 +219,7 @@ public struct ArgumentEffect : CustomStringConvertible, CustomReflectable {
 /// In future we might add non-argument-specific effects, too, like `readnone`, `readonly`.
 public struct FunctionEffects : CustomStringConvertible, CustomReflectable {
   public var argumentEffects: [ArgumentEffect] = []
+  public var globalEffects: SideEffect = SideEffect()
   
   public init() {}
 
