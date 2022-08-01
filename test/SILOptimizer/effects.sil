@@ -162,3 +162,13 @@ bb0(%0 : @guaranteed $List):
   %r = tuple()
   return %r : $()
 }
+
+// CHECK-LABEL: sil [sideeffects _(?), r(%0.c0)] [ossa] @readIdentifiedBoxArg
+sil [ossa] @readIdentifiedBoxArg : $@convention(thin) (@guaranteed { var Int }) -> Int {
+bb0(%0 : @guaranteed ${ var Int }):
+  %1 = project_box %0 : ${ var Int }, 0
+  %5 = begin_access [read] [dynamic] %1 : $*Int
+  %6 = load [trivial] %5 : $*Int
+  end_access %5 : $*Int
+  return %6 : $Int
+}

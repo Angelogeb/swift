@@ -1,14 +1,16 @@
 import SIL
 
 public enum AccessBaseKind {
-  case Box
-  case Stack
-  case Global
-  case Class
-  case Tail
-  case Argument
-  case Yield
-  case Pointer
+  case box
+  case stack
+  case global
+  case clazz
+  case tail
+  case argument
+  case yield
+  case pointer
+
+  var isObject: Bool { self == .clazz || self == .tail }
 }
 
 
@@ -32,16 +34,19 @@ struct AccessBase : CustomStringConvertible {
 
   init?(baseAddress: Value) {
     switch baseAddress {
-    case is RefElementAddrInst   : baseKind = .Class
-    case is RefTailAddrInst      : baseKind = .Tail
-    case is ProjectBoxInst       : baseKind = .Box
-    case is AllocStackInst       : baseKind = .Stack
-    case is FunctionArgument     : baseKind = .Argument
-    case is GlobalAddrInst       : baseKind = .Global
+    case is RefElementAddrInst   : baseKind = .clazz
+    case is RefTailAddrInst      : baseKind = .tail
+    case is ProjectBoxInst       : baseKind = .box
+    case is AllocStackInst       : baseKind = .stack
+    case is FunctionArgument     : baseKind = .argument
+    case is GlobalAddrInst       : baseKind = .global
     default:
-      return nil
-    // case .Yield
-    //   where baseAddress.definingInstruction is BeginApplyInst : self.baseKind =
+      if baseAddress.definingInstruction is BeginApplyInst &&
+         baseAddress.type.isAddress {
+        baseKind = .yield
+      } else {
+        return nil
+      }
     // case .Global:
     //   switch baseAddress {
     //     case is GlobalAddrInst: break
@@ -62,7 +67,7 @@ struct AccessBase : CustomStringConvertible {
 
     self.baseAddress = baseAddress
   }
-  
+
   init(baseAddress: Value, baseKind: AccessBaseKind) {
     self.baseAddress = baseAddress
     self.baseKind = baseKind
@@ -73,10 +78,13 @@ struct AccessBase : CustomStringConvertible {
   }
 
   var isObjectAccess: Bool {
-    return baseKind == .Class || baseKind == .Tail
+    return baseKind == .clazz || baseKind == .tail
   }
 
-  var referenceWithPathComponent: (ref: Value, comp: (SmallProjectionPath.FieldKind, Int))? {
+  // If this `AccessBase` is obtained froma a reference type,
+  // results in the reference `ref` and a `component` describing
+  // the projection type (tail or class field) and the corresponding field index
+  var referenceWithPathComponent: (ref: Value, component: (SmallProjectionPath.FieldKind, Int))? {
     switch baseAddress {
     case let rea as RefElementAddrInst:
       return (rea.operand, (.classField, rea.fieldIndex))
@@ -102,11 +110,14 @@ struct AccessBase : CustomStringConvertible {
     }
   }
 
+  /// Returns `true` if the address is immediately produced by a stack or box allocation
   var isLocal: Bool {
     switch baseKind {
-    case .Box:
-      return baseAddress is AllocBoxInst
-    case .Stack:
+    case .box:
+      // The operand of the projection can be an argument, in which
+      // case it wouldn't be local
+      return (baseAddress as! ProjectBoxInst).operand is AllocBoxInst
+    case .stack:
       return true
     default:
       return false
@@ -114,52 +125,48 @@ struct AccessBase : CustomStringConvertible {
   }
 
   /// Returns `true` if we can reliably compare for equality this `AccessBase`
-  /// with another `AccessBase`
+  /// with another `AccessBase`.
+  /// When comparing two uniquely identified access bases, it can be followed that if they are not equal,
+  /// also the accessed memory addresses do not alias.
+  /// This is e.g. not the case for class references: two different references may still point to the same object.
   var isUniquelyIdentified: Bool {
     switch baseKind {
-    case .Box:
+    case .box:
+      // The operand `%op` in `%baseAddress = project_box %op` can
+      // be `alloc_box` or an argument. Only if it's a fresh allocation it is
+      // uniquelyIdentified, otherwise it is aliasable, as all the other references.
       return baseAddress is AllocBoxInst
-    case .Stack, .Global:
+    case .stack, .global:
       return true
-    case .Argument:
+    case .argument:
+      // An argument address that is non-aliasable
       return (baseAddress as! FunctionArgument).isExclusiveIndirectParameter
-    case .Class, .Tail, .Yield, .Pointer:
+    case .clazz, .tail, .yield, .pointer:
+      // References (.class and .tail) may alias, and so do pointers and
+      // yield results
       return false
     }
   }
 
+  /// Returns `true` if the two access bases do not alias
   func isDistinct(from other: AccessBase) -> Bool {
-    if self.isUniquelyIdentified {
-      if other.isUniquelyIdentified {
-        if baseKind != other.baseKind { return true }
-        switch baseKind {
-        case .Global:
-          return (baseAddress as! GlobalAddrInst).global != (other.baseAddress as! GlobalAddrInst).global
-        case .Class:
-          return (baseAddress as! RefElementAddrInst).fieldIndex != (other.baseAddress as! RefElementAddrInst).fieldIndex
-        case .Box, .Stack, .Argument, .Tail, .Yield, .Pointer:
-          return false
-        }
-      }
-    }
-    if other.isUniquelyIdentified { return other.isDistinct(from: self) }
-
-    if isObjectAccess {
-      if other.isObjectAccess {
-        if baseKind != other.baseKind { return true }
-
-        return baseKind == .Class &&
-               (baseAddress as! RefElementAddrInst).fieldIndex != (other.baseAddress as! RefElementAddrInst).fieldIndex
-      }
-
+    switch (baseAddress, other.baseAddress) {
+    case is (AllocStackInst, AllocStackInst),
+         is (AllocBoxInst, AllocBoxInst):
+      return baseAddress != other.baseAddress
+    case let (this as GlobalAddrInst, that as GlobalAddrInst):
+      return this.global != that.global
+    case let (this as FunctionArgument, that as FunctionArgument):
+      return (this.isExclusiveIndirectParameter || that.isExclusiveIndirectParameter) && this != that
+    case let (this as RefElementAddrInst, that as RefElementAddrInst):
+      return (this.fieldIndex != that.fieldIndex)
+    default:
+      if isUniquelyIdentified && other.isUniquelyIdentified && baseKind != other.baseKind { return true }
+      // property: `isUniquelyIdentified` XOR `isObject`
+      if isUniquelyIdentified && other.baseKind.isObject { return true }
+      if baseKind.isObject && other.isUniquelyIdentified { return true }
       return false
     }
-
-    if other.isObjectAccess {
-      return other.isDistinct(from: self)
-    }
-
-    return false
   }
 }
 
@@ -176,8 +183,8 @@ struct AccessPath : CustomStringConvertible {
   }
 
   func isDistinct(from other: AccessPath) -> Bool {
-    if base.isDistinct(from: other.base) { return true }
-    return false
+    return base.isDistinct(from: other.base) ||
+      (base.baseAddress == other.base.baseAddress && projectionPath != other.projectionPath)
   }
 }
 
@@ -207,19 +214,41 @@ func canBeOperandOfIndexAddr(_ value: Value) -> Bool {
   }
 }
 
-struct PointerIdentificationWalker {
+/// Given a `%addr = pointer_to_address %ptr_operand` instruction tries to identify
+/// the address the pointer operand `ptr_operand` originates from, if any exists.
+/// This is useful to identify patterns like
+/// ```
+/// %orig_addr = global_addr @...
+/// %ptr = address_to_pointer %orig_addr
+/// %addr = pointer_to_address %ptr
+/// ```
+/// which might arise when `[global_init]` functions for global addressors are inlined.
+///
+/// Alternatively, if the pointer originates from a ``FunctionArgument``, the argument is returned.
+///
+/// This underlying use-def traversal might cross phi arguments to identify the originating address
+/// to handle diamond-shaped control-flow with common originating address which might arise due to transformations ([example] (https://github.com/apple/swift/blob/8f9c5339542b17af9033f51ad7a0b95a043cad1b/test/SILOptimizer/access_storage_analysis_ossa.sil#L669-L705)) .
+struct PointerIdentification {
   private var walker = PointerIdentificationUseDefWalker()
 
-  mutating func compute(_ atp: PointerToAddressInst) -> Value? {
-    walker.addrType = atp.type
-    walker.result = nil
-    _ = walker.walkUp(value: atp.operand, path: SmallProjectionPath())
+  typealias AddressOrPointerArgument = Value
+  mutating func getOriginatingAddressOrArgument(_ atp: PointerToAddressInst) -> AddressOrPointerArgument? {
+    walker.start(atp.type)
+    if walker.walkUp(value: atp.operand, path: SmallProjectionPath()) == .abortWalk {
+      return nil
+    }
     return walker.result
   }
-  
+
   private struct PointerIdentificationUseDefWalker : ValueUseDefWalker {
-    var addrType: Type!
-    var result: Value?
+    private var addrType: Type!
+    private(set) var result: Value?
+
+    mutating func start(_ addrType: Type) {
+      self.addrType = addrType
+      result = nil
+      walkUpCache.clear()
+    }
 
     mutating func rootDef(value: Value, path: SmallProjectionPath) -> WalkResult {
       switch value {
@@ -268,11 +297,9 @@ struct AccessPathWalker {
   mutating func getAccessPath(of address: Value) -> AccessPath? {
     assert(address.type.isAddress, "Expected address")
     walker.start()
-    _ = walker.walkUp(
-      address: address,
-      path: AccessPathWalker.Path()
-    )
-
+    if walker.walkUp(address: address, path: AccessPathWalker.Path()) == .abortWalk {
+      return nil
+    }
     return walker.result
   }
 
@@ -291,9 +318,9 @@ struct AccessPathWalker {
 
   private struct AccessPathWalker : AddressUseDefWalker {
     private(set) var result: AccessPath? = nil
-    private var _beginAccess: BeginAccessInst? = nil
+    private var foundBeginAccess: BeginAccessInst? = nil
     var scope: EnclosingScope? {
-      if let ba = _beginAccess {
+      if let ba = foundBeginAccess {
         return .scope(ba)
       } else {
         guard let accessPath = result else { return nil }
@@ -301,11 +328,11 @@ struct AccessPathWalker {
       }
     }
 
-    private var pointerWalker = PointerIdentificationWalker()
+    private var pointerId = PointerIdentification()
 
     mutating func start() {
       result = nil
-      _beginAccess = nil
+      foundBeginAccess = nil
     }
 
     struct Path : SimpleWalkingPath {
@@ -340,21 +367,13 @@ struct AccessPathWalker {
     mutating func rootDef(address: Value, path: Path) -> WalkResult {
       // Try identifying the address a pointer originates from
       if let p2ai = address as? PointerToAddressInst,
-         let newAddress = pointerWalker.compute(p2ai) {
+         let newAddress = pointerId.getOriginatingAddressOrArgument(p2ai) {
         return walkUp(address: newAddress, path: path)
       }
 
       // If this is a base then we're done
       if let base = AccessBase(baseAddress: address) {
         self.result = AccessPath(base: base, projectionPath: path.projectionPath)
-        return .continueWalk
-      }
-
-      if address.definingInstruction is BeginApplyInst {
-        self.result = AccessPath(
-          base: AccessBase(baseAddress: address, baseKind: .Yield),
-          projectionPath: path.projectionPath
-        )
         return .continueWalk
       }
 
@@ -372,33 +391,16 @@ struct AccessPathWalker {
         // projection. Bail out
         self.result = nil
         return .abortWalk
-      } else if let ba = address as? BeginAccessInst, _beginAccess == nil {
-        _beginAccess = ba
+      } else if let ba = address as? BeginAccessInst, foundBeginAccess == nil {
+        foundBeginAccess = ba
       }
       return walkUpDefault(address: address, path: path.with(indexAddr: false))
     }
   }
-
-}
-
-struct AccessStoragePathWalkerInternal : ValueUseDefWalker {
-  var walkUpCache = WalkerCache<Path>()
-  var origins: [AccessStoragePath] = []
-
-  mutating func start() {
-    walkUpCache.clear()
-    origins.removeAll(keepingCapacity: true)
-  }
-
-  // NOTE: the storage can also be provided by a LoadInst
-  mutating func rootDef(value: Value, path: SmallProjectionPath) -> WalkResult {
-    origins.append(AccessStoragePath(storage: value, path: path))
-    return .continueWalk
-  }
 }
 
 struct AccessStoragePathWalker {
-  private var walker = AccessStoragePathWalkerInternal()
+  private var walker = AccessStoragePathWalker()
   mutating func compute(_ ap: AccessPath) -> [AccessStoragePath] {
     walker.start()
     if let (ref, (fieldKind, fieldIndex)) = ap.base.referenceWithPathComponent {
@@ -414,6 +416,22 @@ struct AccessStoragePathWalker {
     walker.start()
     _ = walker.walkUp(value: ref, path: SmallProjectionPath())
     return walker.origins
+  }
+
+  private struct AccessStoragePathWalker : ValueUseDefWalker {
+    var walkUpCache = WalkerCache<Path>()
+    var origins: [AccessStoragePath] = []
+
+    mutating func start() {
+      walkUpCache.clear()
+      origins.removeAll(keepingCapacity: true)
+    }
+
+    // NOTE: the storage can also be provided by a LoadInst
+    mutating func rootDef(value: Value, path: SmallProjectionPath) -> WalkResult {
+      origins.append(AccessStoragePath(storage: value, path: path))
+      return .continueWalk
+    }
   }
 }
 

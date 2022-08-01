@@ -15,17 +15,17 @@ import SIL
 let effectInference = FunctionPass(name: "infer-effects", {
   (function: Function, context: PassContext) in
   // print("Computing effects for \(function.name)")
-  
-  // infer(function)
-  
+
+  //  infer(function)
+
   var effectState = EffectState(function.entryBlock.arguments.endIndex, context.calleeAnalysis)
-  
+
   for block in function.blocks {
     for inst in block.instructions {
       effectState.update(for: inst)
     }
   }
-  
+
   context.modifyEffects(in: function, { effects in
     effects.globalEffects = effectState.globalEffects
     for (idx, (effect, path)) in effectState.argumentEffects.enumerated() {
@@ -37,29 +37,29 @@ let effectInference = FunctionPass(name: "infer-effects", {
       )
     }
   })
-  
+
   // print("End computing effects for \(function.name)")
 })
 
 
-struct EffectState {
+private struct EffectState {
   var argumentEffects: [(effect: SideEffect, path: SmallProjectionPath?)]
   var globalEffects: SideEffect = SideEffect()
   var localEffects: SideEffect = SideEffect()
-  
+
   var traps: Bool = false
   var readsRC: Bool = false
-  
+
   var accessPathWalker = AccessPathWalker()
   var accessStorageWalker = AccessStoragePathWalker()
-  
+
   private let calleeAnalysis: CalleeAnalysis
-  
+
   init(_ nargs: Int, _ calleeAnalysis: CalleeAnalysis) {
     argumentEffects = Array(repeating: (SideEffect(), nil), count: nargs)
     self.calleeAnalysis = calleeAnalysis
   }
-  
+
   private mutating
   func updateEffect(_ origin: Value, _ update: (inout SideEffect) -> (), _ path: SmallProjectionPath! = nil) {
     switch origin {
@@ -76,7 +76,7 @@ struct EffectState {
       update(&globalEffects)
     }
   }
-  
+
   private mutating
   func updateEffect(to value: Value, _ update: (inout SideEffect) -> ()) {
     if value.type.isAddress {
@@ -101,13 +101,13 @@ struct EffectState {
       }
     }
   }
-  
+
   mutating
   func update(for inst: Instruction) {
     switch inst {
     case let apply as ApplyInst:
       guard let callees = calleeAnalysis.getCallees(callee: apply.callee) else { return globalEffects.setWorstEffects() }
-      
+
       for callee in callees {
         // Collect callee `sideeffect`s
         let effects = callee.effects
@@ -119,10 +119,10 @@ struct EffectState {
             return nil
           }
         })
-        
+
         // Update global effects
         globalEffects.merge(callee.effects.globalEffects)
-        
+
         // Update argument effects
         let arguments = apply.argumentOperands
         for (paramIdx, effect) in sideeffects {
@@ -184,7 +184,7 @@ struct EffectState {
       if inst.mayHaveSideEffects {
         globalEffects.setWorstEffects()
       }
-      
+
       if inst.mayTrap {
         traps = true
       }
