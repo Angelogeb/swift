@@ -4,13 +4,13 @@ public enum AccessBaseKind {
   case box
   case stack
   case global
-  case clazz
+  case `class`
   case tail
   case argument
   case yield
   case pointer
 
-  var isObject: Bool { self == .clazz || self == .tail }
+  var isObject: Bool { self == .class || self == .tail }
 }
 
 
@@ -34,7 +34,7 @@ struct AccessBase : CustomStringConvertible {
 
   init?(baseAddress: Value) {
     switch baseAddress {
-    case is RefElementAddrInst   : baseKind = .clazz
+    case is RefElementAddrInst   : baseKind = .class
     case is RefTailAddrInst      : baseKind = .tail
     case is ProjectBoxInst       : baseKind = .box
     case is AllocStackInst       : baseKind = .stack
@@ -47,13 +47,6 @@ struct AccessBase : CustomStringConvertible {
       } else {
         return nil
       }
-    // case .Global:
-    //   switch baseAddress {
-    //     case is GlobalAddrInst: break
-    //     // TODO: other cases?
-    //     default:
-    //       return nil
-    //   }
     // case .Pointer:
     //   switch baseAddress {
     //     case is PointerToAddressInst: break
@@ -78,7 +71,7 @@ struct AccessBase : CustomStringConvertible {
   }
 
   var isObjectAccess: Bool {
-    return baseKind == .clazz || baseKind == .tail
+    return baseKind == .class || baseKind == .tail
   }
 
   // If this `AccessBase` is obtained froma a reference type,
@@ -141,7 +134,7 @@ struct AccessBase : CustomStringConvertible {
     case .argument:
       // An argument address that is non-aliasable
       return (baseAddress as! FunctionArgument).isExclusiveIndirectParameter
-    case .clazz, .tail, .yield, .pointer:
+    case .class, .tail, .yield, .pointer:
       // References (.class and .tail) may alias, and so do pointers and
       // yield results
       return false

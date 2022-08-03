@@ -826,14 +826,14 @@ void Function_register(SwiftMetatype metatype,
 }
 
 std::pair<const char *, int> SILFunction::
-parseEffects(StringRef attrs, bool fromSIL, bool isDerived,
+parseEffects(StringRef attrs, bool fromSIL, int effectFlags,
              ArrayRef<StringRef> paramNames) {
   if (parseFunction) {
     static_assert(sizeof(BridgedStringRef) == sizeof(StringRef),
                   "relying on StringRef layout compatibility");
     BridgedParsingError error =
       parseFunction({this}, getBridgedStringRef(attrs), (SwiftInt)fromSIL,
-                (SwiftInt) isDerived,
+                (SwiftInt) effectFlags,
                 {(const unsigned char *)paramNames.data(), paramNames.size()});
     return {(const char *)error.message, (int)error.position};
   }
@@ -868,12 +868,12 @@ visitArgEffects(std::function<void(int, bool, ArgEffectKind)> c) const {
   BridgedFunction bridgedFn = {const_cast<SILFunction *>(this)};
   while (int flags = getEffectFlagsFunction(bridgedFn, idx)) {
     ArgEffectKind kind = ArgEffectKind::Unknown;
-    if (flags & EffectsFlagEscape)
+    if (flags & EffectsFlag_Escape)
       kind = ArgEffectKind::Escape;
-    else if (flags & EffectsFlagSideEffect)
+    else if (flags & EffectsFlag_SideEffect)
       kind = ArgEffectKind::SideEffect;
 
-    c(idx, (flags & EffectsFlagDerived) != 0, kind);
+    c(idx, (flags & EffectsFlag_Derived) != 0, kind);
     idx++;
   }
 }

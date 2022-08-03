@@ -616,6 +616,7 @@ BridgedStringRef CondFailInst_getMessage(BridgedInstruction cfi) {
 }
 
 BridgedBuiltinID BuiltinInst_getID(BridgedInstruction bi) {
+
   return (BridgedBuiltinID)castToInst<BuiltinInst>(bi)->getBuiltinInfo().ID;
 }
 
@@ -745,6 +746,10 @@ BridgedAccessKind BeginAccessInst_getAccessKind(BridgedInstruction beginAccess) 
     case SILAccessKind::Deinit:
       return BridgedAccessKind::AccessKind_Deinit;
   }
+}
+
+SwiftInt BeginAccessInst_isStatic(BridgedInstruction beginAccess) {
+  return castToInst<BeginAccessInst>(beginAccess)->getEnforcement() == SILAccessEnforcement::Static ? 1 : 0;
 }
 
 SwiftInt CopyAddrInst_isTakeOfSrc(BridgedInstruction copyAddr) {

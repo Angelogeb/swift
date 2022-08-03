@@ -45,6 +45,43 @@ public struct SideEffect : CustomStringConvertible {
   }
 }
 
+public struct GlobalEffects : CustomStringConvertible {
+  public var sideeffect = SideEffect()
+
+  public var traps: Bool = false
+  public var allocates: Bool = false
+  public var readsRC: Bool = false
+
+  public init(isValid: Bool = false) {
+    self.isValid = isValid
+  }
+
+  public mutating func merge(_ other: GlobalEffects) {
+    guard other.isValid else { return setWorstEffects() }
+    sideeffect.merge(other.sideeffect)
+    traps = traps || other.traps
+    allocates = allocates || other.allocates
+    readsRC = readsRC || other.readsRC
+  }
+
+  public mutating func setWorstEffects() {
+    sideeffect.setWorstEffects()
+    traps = true
+    allocates = true
+    readsRC = true
+  }
+
+  public var description: String {
+    var res: String = "g:\(sideeffect.description)"
+    if traps { res += ";trap" }
+    if allocates { res += ";allocate" }
+    if readsRC { res += ";readrc" }
+    return res
+  }
+
+  private(set) var isValid: Bool
+}
+
 /// An effect on a function argument.
 public struct ArgumentEffect : CustomStringConvertible, CustomReflectable {
 
@@ -219,7 +256,7 @@ public struct ArgumentEffect : CustomStringConvertible, CustomReflectable {
 /// In future we might add non-argument-specific effects, too, like `readnone`, `readonly`.
 public struct FunctionEffects : CustomStringConvertible, CustomReflectable {
   public var argumentEffects: [ArgumentEffect] = []
-  public var globalEffects: SideEffect = SideEffect()
+  public var globalEffects: GlobalEffects = GlobalEffects(isValid: false)
   
   public init() {}
 
@@ -227,6 +264,7 @@ public struct FunctionEffects : CustomStringConvertible, CustomReflectable {
     self.argumentEffects = src.argumentEffects.map {
         ArgumentEffect(copiedFrom: $0, resultArgDelta: resultArgDelta)
       }
+    self.globalEffects = src.globalEffects
   }
 
   public func canEscape(argumentIndex: Int, path: ArgumentEffect.Path, analyzeAddresses: Bool) -> Bool {
@@ -278,15 +316,52 @@ extension StringParser {
     try throwError("unknown effect")
   }
 
-  mutating func parseEffectFromSIL(for function: Function, isDerived: Bool) throws -> ArgumentEffect {
-    if consume("!") {
-      let selectedArg = try parseSelectionFromSIL(for: function)
-      return ArgumentEffect(.notEscaping, selectedArg: selectedArg, isDerived: isDerived)
+  mutating func parseGlobalEffect() throws -> GlobalEffects {
+    var result = GlobalEffects(isValid: true)
+    result.sideeffect = try parseSideEffectFlags()
+    if consume(";trap") { result.traps = true }
+    if consume(";allocate") { result.allocates = true }
+    if consume(";readrc") { result.readsRC = true }
+    return result
+  }
+
+  mutating func parseSideEffectFlags() throws -> SideEffect {
+    // try parsing a pure effect
+    if consume("_") { return SideEffect() }
+    
+    // try parsing an impure effect
+    var result = SideEffect()
+    if consume("r") { result.read = true }
+    if consume("w") { result.write = true }
+    if consume("+") { result.retain = true }
+    if consume("-") { result.release = true }
+
+    if result.isPure {
+      try throwError("Unknown sideeffect flags")
     }
-    let from = try parseSelectionFromSIL(for: function)
-    let exclusive = try parseEscapingArrow()
-    let to = try parseSelectionFromSIL(for: function, acceptReturn: true)
-    return ArgumentEffect(.escaping(to, exclusive), selectedArg: from, isDerived: isDerived)
+
+    return result
+  }
+
+  mutating func parseEffectFromSIL(for function: Function, effectFlags: Int) throws -> ArgumentEffect {
+    if effectFlags.isEscape {
+      if consume("!") {
+        let selectedArg = try parseSelectionFromSIL(for: function)
+        return ArgumentEffect(.notEscaping, selectedArg: selectedArg, isDerived: effectFlags.isDerived)
+      }
+      let from = try parseSelectionFromSIL(for: function)
+      let exclusive = try parseEscapingArrow()
+      let to = try parseSelectionFromSIL(for: function, acceptReturn: true)
+      return ArgumentEffect(.escaping(to, exclusive), selectedArg: from, isDerived: effectFlags.isDerived)
+    } else if effectFlags.isSideEffect {
+      let sideeffect = try parseSideEffectFlags()
+      if !consume("(") { try throwError("Missing selection for argument effect") }
+      let selection = try parseSelectionFromSIL(for: function)
+      if !consume(")") { try throwError("Expected ')' but unexpected token found. Malformed selection?") }
+      return ArgumentEffect(.sideeffect(sideeffect), selectedArg: selection, isDerived: effectFlags.isDerived)
+    } else {
+      try throwError("Unknown effect flags")
+    }
   }
 
   private mutating func parseEscapingArrow() throws -> Bool {

@@ -105,17 +105,21 @@ final public class Function : CustomStringConvertible, HasShortDescription {
       // writeFn
       { (f: BridgedFunction, os: BridgedOStream, idx: Int) in
         let s = (idx == -1 ?
-          "\(f.function.effects.globalEffects)(?)" :
+          "\(f.function.effects.globalEffects)" :
           f.function.effects.argumentEffects[idx].description)
         s.withBridgedStringRef { OStream_write(os, $0) }
       },
       // parseFn:
-      { (f: BridgedFunction, str: BridgedStringRef, fromSIL: Int, isDerived: Int, paramNames: BridgedArrayRef) -> BridgedParsingError in
+      { (f: BridgedFunction, str: BridgedStringRef, fromSIL: Int, effectFlags: Int, paramNames: BridgedArrayRef) -> BridgedParsingError in
         do {
           var parser = StringParser(str.string)
+          if effectFlags.isSideEffect && parser.consume("g:") {
+            f.function.effects.globalEffects = try parser.parseGlobalEffect()
+            return BridgedParsingError(message: nil, position: 0)
+          }
           let effect: ArgumentEffect
           if fromSIL != 0 {
-            effect = try parser.parseEffectFromSIL(for: f.function, isDerived: isDerived != 0)
+            effect = try parser.parseEffectFromSIL(for: f.function, effectFlags: effectFlags)
           } else {
             let paramToIdx = paramNames.withElements(ofType: BridgedStringRef.self) {
                 (buffer: UnsafeBufferPointer<BridgedStringRef>) -> Dictionary<String, Int> in
@@ -154,19 +158,19 @@ final public class Function : CustomStringConvertible, HasShortDescription {
       },
       // getEffectFlags
       {  (f: BridgedFunction, idx: Int) -> Int in
-        if idx == -1 { return Int(EffectsFlagSideEffect) | Int(EffectsFlagDerived) }
+      if idx == -1 { return f.function.effects.globalEffects.isValid ? (Int(EffectsFlag_SideEffect) | Int(EffectsFlag_Derived)) : 0 }
         let argEffects = f.function.effects.argumentEffects
         if idx >= argEffects.count { return 0 }
         let effect = argEffects[idx]
         var flags = 0
         switch effect.kind {
           case .notEscaping, .escaping:
-            flags |= Int(EffectsFlagEscape)
+            flags |= Int(EffectsFlag_Escape)
           case .sideeffect:
-            flags |= Int(EffectsFlagSideEffect)
+            flags |= Int(EffectsFlag_SideEffect)
         }
         if effect.isDerived {
-          flags |= Int(EffectsFlagDerived)
+          flags |= Int(EffectsFlag_Derived)
         }
         return flags
       }
@@ -276,5 +280,19 @@ extension BridgedArgumentConvention {
       default:
         fatalError("unsupported argument convention")
     }
+  }
+}
+
+extension Int {
+  var isDerived: Bool {
+    (self & Int(EffectsFlag_Derived)) == Int(EffectsFlag_Derived)
+  }
+
+  var isEscape: Bool {
+    (self & Int(EffectsFlag_Escape)) == Int(EffectsFlag_Escape)
+  }
+
+  var isSideEffect: Bool {
+    (self & Int(EffectsFlag_SideEffect)) == Int(EffectsFlag_SideEffect)
   }
 }

@@ -992,7 +992,7 @@ public:
   };
   
   std::pair<const char *, int>  parseEffects(StringRef attrs, bool fromSIL,
-                                             bool isDerived,
+                                             int effectFlags,
                                              ArrayRef<StringRef> paramNames);
   void writeEffect(llvm::raw_ostream &OS, int effectIdx) const;
   void copyEffects(SILFunction *from);

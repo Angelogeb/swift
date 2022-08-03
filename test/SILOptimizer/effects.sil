@@ -19,14 +19,14 @@ struct Ptr {
   var p: Int64
 }
 
-// CHECK-LABEL: sil [sideeffects _(?), r(%0)] [ossa] @readIdentifiedArg
+// CHECK-LABEL: sil [sideeffects g:_, r(%0)] [ossa] @readIdentifiedArg
 sil [ossa] @readIdentifiedArg : $@convention(thin) (@in Int) -> Int {
 bb0(%0 : $*Int):
   %res = load [trivial] %0 : $*Int
   return %res : $Int
 }
 
-// CHECK-LABEL: sil [sideeffects _(?), w(%0)] [ossa] @writeIdentifiedArg
+// CHECK-LABEL: sil [sideeffects g:_, w(%0)] [ossa] @writeIdentifiedArg
 sil [ossa] @writeIdentifiedArg : $@convention(thin) (@inout Int) -> () {
 bb0(%0 : $*Int):
   %2 = integer_literal $Builtin.Int64, 42
@@ -36,7 +36,7 @@ bb0(%0 : $*Int):
   return %5 : $()
 }
 
-// CHECK-LABEL: sil [sideeffects _(?), w(%0.s0.c0)] [ossa] @$writeToHead
+// CHECK-LABEL: sil [sideeffects g:_;trap, w(%0.s0.c0)] [ossa] @$writeToHead
 sil [ossa] @$writeToHead : $@convention(thin) (@guaranteed S) -> () {
 bb0(%0 : @guaranteed $S):
   debug_value %0 : $S, let, name "s", argno 1
@@ -53,7 +53,7 @@ bb0(%0 : @guaranteed $S):
   return %11 : $()
 }
 
-// CHECK-LABEL: sil [sideeffects _(?), w(%0.c0), w(%1.c0)] [ossa] @storeToArgs
+// CHECK-LABEL: sil [sideeffects g:_;trap, w(%0.c0), w(%1.c0)] [ossa] @storeToArgs
 sil [ossa] @storeToArgs : $@convention(thin) (@guaranteed List, @guaranteed List) -> () {
 bb0(%1 : @guaranteed $List, %2 : @guaranteed $List):
   cond_br undef, bb1, bb2
@@ -85,7 +85,7 @@ bb3:
 
 // Path becomes "**" because store is on `x` while
 // retain release are on the reference itself
-// CHECK-LABEL: sil [sideeffects _(?), w+-(%0.**)] @storeMaybeLocalPhi
+// CHECK-LABEL: sil [sideeffects g:_;trap;allocate, w+-(%0.**)] @storeMaybeLocalPhi
 sil @storeMaybeLocalPhi : $@convention(thin) (@guaranteed List) -> () {
 bb0(%1 : $List):
   cond_br undef, bb1, bb2
@@ -111,7 +111,7 @@ bb3(%12 : $List):
   return %22 : $()
 }
 
-// CHECK-LABEL: sil [sideeffects _(?), w(%0.s0)] [ossa] @testStructPhiCommon
+// CHECK-LABEL: sil [sideeffects g:_, w(%0.s0)] [ossa] @testStructPhiCommon
 sil [ossa] @testStructPhiCommon : $@convention(thin) (@inout Ptr) -> () {
 bb0(%0 : $*Ptr):
   %2 = struct_element_addr %0 : $*Ptr, #Ptr.p
@@ -134,7 +134,7 @@ bb3(%6 : $Builtin.RawPointer) :
   return %22 : $()
 }
 
-// CHECK-LABEL: sil [sideeffects _(?), w(%0.s0.c0)] [ossa] @calleeWriteToHead
+// CHECK-LABEL: sil [sideeffects g:_;trap, w(%0.s0.c0)] [ossa] @calleeWriteToHead
 sil [ossa] @calleeWriteToHead : $@convention(thin) (@guaranteed S) -> () {
 bb0(%0 : @guaranteed $S):
   debug_value %0 : $S, let, name "s", argno 1
@@ -152,7 +152,7 @@ bb0(%0 : @guaranteed $S):
   return %11 : $()
 }
 
-// CHECK-LABEL: sil [sideeffects w(?), w(%0)] [ossa] @has_partial_apply
+// CHECK-LABEL: sil [sideeffects g:w;trap, w(%0)] [ossa] @has_partial_apply
 sil [ossa] @has_partial_apply : $@convention(thin) (@guaranteed List) -> () {
 bb0(%0 : @guaranteed $List):
   %f = function_ref @storeToArgs : $@convention(thin) (@guaranteed List, @guaranteed List) -> ()
@@ -163,7 +163,7 @@ bb0(%0 : @guaranteed $List):
   return %r : $()
 }
 
-// CHECK-LABEL: sil [sideeffects _(?), r(%0.c0)] [ossa] @readIdentifiedBoxArg
+// CHECK-LABEL: sil [sideeffects g:_;trap, r(%0.c0)] [ossa] @readIdentifiedBoxArg
 sil [ossa] @readIdentifiedBoxArg : $@convention(thin) (@guaranteed { var Int }) -> Int {
 bb0(%0 : @guaranteed ${ var Int }):
   %1 = project_box %0 : ${ var Int }, 0
