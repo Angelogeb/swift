@@ -531,6 +531,10 @@ std::string SILGlobalVariable_debugDescription(BridgedGlobalVar global) {
   return str;
 }
 
+SwiftInt SILGlobalVariable_isLet(BridgedGlobalVar global) {
+  return castToGlobal(global)->isLet();
+}
+
 //===----------------------------------------------------------------------===//
 //                               SILInstruction
 //===----------------------------------------------------------------------===//
@@ -673,6 +677,10 @@ SwiftInt InjectEnumAddrInst_caseIndex(BridgedInstruction ieai) {
 
 SwiftInt RefElementAddrInst_fieldIndex(BridgedInstruction reai) {
   return castToInst<RefElementAddrInst>(reai)->getFieldIndex();
+}
+
+SwiftInt RefElementAddrInst_fieldIsLet(BridgedInstruction reai) {
+  return castToInst<RefElementAddrInst>(reai)->getField()->isLet();
 }
 
 SwiftInt PartialApplyInst_numArguments(BridgedInstruction pai) {
