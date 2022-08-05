@@ -316,10 +316,14 @@ final public class BuiltinInst : SingleValueInstruction {
   public enum ID  {
     case None
     case DestroyArray
+    case IsUnique
+    case CondUnreachable
   }
-  public var id: ID? {
+  public var id: ID {
     switch BuiltinInst_getID(bridged) {
       case DestroyArrayBuiltin: return .DestroyArray
+      case IsUniqueBuiltin: return .IsUnique
+      case CondUnreachableBuiltin: return .CondUnreachable
       default: return .None
     }
   }
@@ -518,6 +522,8 @@ extension BridgedAccessKind {
 // TODO: add support for begin_unpaired_access
 final public class BeginAccessInst : SingleValueInstruction, UnaryInstruction {
   public var accessKind: AccessKind { BeginAccessInst_getAccessKind(bridged).kind }
+
+  public var isStatic: Bool { BeginAccessInst_isStatic(bridged) != 0 }
 }
 
 public protocol ScopedInstruction {
